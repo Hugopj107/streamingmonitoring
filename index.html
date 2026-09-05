@@ -102,6 +102,9 @@
   .ibadges{display:flex;gap:6px;flex-wrap:wrap;font-size:10px}
   .badge{padding:2px 7px;border-radius:4px;font-weight:700}
   .pass{color:#04110d;background:var(--accent)} .check{color:#04110d;background:#c58a1a} .fail{color:#fff;background:var(--warn)} .na{color:var(--dim);background:#20272f}
+  .badge.viewtoggle{cursor:pointer}
+  .badge.viewtoggle:hover{outline:1px solid var(--ink)}
+  .badge.viewtoggle.viewon{outline:2px solid var(--ink);outline-offset:1px}
   .outlier{color:#04110d;background:#c58a1a;padding:2px 7px;border-radius:4px;font-weight:700}
   .icard select.assign{position:static;max-width:none;width:auto}
   .ctl .row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
@@ -720,7 +723,18 @@ function setIngestState(ic,txt,bad){
   ic.stageEl.classList.toggle('alert',!!bad);
 }
 function badgeIngest(el,prefix,v){ el.textContent=prefix+' '+v;
-  el.className='badge '+(v==='PASS'?'pass':v==='CHECK'?'check':v==='FAIL'?'fail':'na'); }
+  // classList add/remove (not className=) so it doesn't clobber the iexp/iwb/viewtoggle/viewon
+  // classes those two badges also carry (they're clickable view toggles, see setIngestView)
+  el.classList.remove('pass','check','fail','na');
+  el.classList.add(v==='PASS'?'pass':v==='CHECK'?'check':v==='FAIL'?'fail':'na'); }
+// click EXP/WB to overlay the false-colour exposure / RGB white-balance view on that tile's
+// canvas (click the active one again for normal) — display only; detection/QC always read the
+// raw frame (see the `raw` canvas in addIngestCourt), so toggling a view never affects logging.
+function setIngestView(ic,v){
+  ic.view = ic.view===v ? 'normal' : v;
+  ic.expBadge.classList.toggle('viewon', ic.view==='false');
+  ic.wbBadge.classList.toggle('viewon', ic.view==='rgb');
+}
 
 function addIngestCourt(initial){
   const feedKey='ic-'+Math.random().toString(36).slice(2,9);
@@ -746,14 +760,19 @@ function addIngestCourt(initial){
       <span class="chip">Δ<span class="ipct">0</span>%</span>
     </div>
     <div class="ibadges">
-      <span class="badge na iexp">EXP —</span>
-      <span class="badge na iwb">WB —</span>
+      <span class="badge na iexp viewtoggle" title="Click to overlay the false-colour exposure view">EXP —</span>
+      <span class="badge na iwb viewtoggle" title="Click to overlay the RGB white-balance view">WB —</span>
       <span class="badge na iaud">AUD —</span>
       <span class="outlier" style="display:none">⚠ OUTLIER</span>
     </div>`;
   document.getElementById('ingest-grid').appendChild(el);
 
   const cvEl=el.querySelector('canvas'), cx=cvEl.getContext('2d');
+  // raw (undoctored) native-res buffer that detection/QC always read from — decoupled from
+  // cvEl, the visible canvas, which can show a false-colour/RGB-balance view instead of the
+  // real picture; detection must never be affected by what the operator is currently looking at
+  const raw=document.createElement('canvas'); raw.width=384; raw.height=216;
+  const rx=raw.getContext('2d');
   const off=document.createElement('canvas'); off.width=PW; off.height=PH;
   const ox=off.getContext('2d',{willReadFrequently:true});
 
@@ -773,6 +792,7 @@ function addIngestCourt(initial){
     grayBuf:new Float32Array(PW*PH), prevGray:null,
     silenceMs:0, lastAudioT:0,
     qcStab: window.QCStabilizer ? new window.QCStabilizer() : null, lastQCAt:0, lastQC:null,
+    view:'normal',
   };
   ic.court='SRT '+ic.id; ic.nm.textContent=ic.court;
   ingestCourts.push(ic);
@@ -780,11 +800,17 @@ function addIngestCourt(initial){
   if(initial) ic.urlInput.value=initial.url||'';
 
   ic.sel.onchange=()=>assignCourt(ic, ic.sel.value, 'SRT '+ic.id);
+  ic.expBadge.onclick=()=>setIngestView(ic,'false');
+  ic.wbBadge.onclick=()=>setIngestView(ic,'rgb');
 
   ic.onFrame=({w,h,buf,frozenMs})=>{
     const arr=new Uint8ClampedArray(buf.buffer||buf);
-    cx.putImageData(new ImageData(arr,w,h),0,0);
-    ox.drawImage(cvEl,0,0,PW,PH);
+    rx.putImageData(new ImageData(arr,w,h),0,0);
+    if(ic.view==='normal') cx.putImageData(new ImageData(arr,w,h),0,0);
+    else { const out=new Uint8ClampedArray(arr.length);
+      if(ic.view==='false') window.falseColorInto(arr,out,w,h); else window.rgbBalanceInto(arr,out,w,h);
+      cx.putImageData(new ImageData(out,w,h),0,0); }
+    ox.drawImage(raw,0,0,PW,PH);
     const data=ox.getImageData(0,0,PW,PH).data;
     for(let i=0,j=0;i<ic.grayBuf.length;i++,j+=4) ic.grayBuf[i]=0.299*data[j]+0.587*data[j+1]+0.114*data[j+2];
     const now=performance.now(); const dt=ic._t?now-ic._t:16; ic._t=now;
