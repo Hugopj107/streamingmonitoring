@@ -35,6 +35,7 @@ window.ingestAPI = {
   start: (courtId, url) => ipcRenderer.invoke('ingest-start', { courtId, url }),
   stop: courtId => ipcRenderer.invoke('ingest-stop', { courtId }),
   openTest: () => ipcRenderer.invoke('open-ingest-test'),
+  openGrid: () => ipcRenderer.invoke('open-ingest-grid'),
   onFrame: cb => ipcRenderer.on('ingest-frame', (e, d) => cb(d)),
   onAudio: cb => ipcRenderer.on('ingest-audio', (e, d) => cb(d)),
   onStatus: cb => ipcRenderer.on('ingest-status', (e, d) => cb(d)),

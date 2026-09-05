@@ -103,6 +103,7 @@
     <button id="export-finals">Export last match ▾</button>
     <button id="fullscreen">⛶ Fullscreen</button>
     <button id="ingest-beta" title="Try direct SRT/RTSP ingest (no screen-share)">Direct ingest (beta)</button>
+    <button id="ingest-grid" title="Multi-court grid: one direct SRT/RTSP ingest per court">Multi-court grid (beta)</button>
     <span class="chip" id="cap-status"></span>
     <span class="chip"><span id="fps">0</span> fps</span>
   </div>
@@ -546,6 +547,9 @@ document.getElementById('report').onclick=downloadReport;
 { const ib=document.getElementById('ingest-beta');
   if(window.ingestAPI) ib.onclick=()=>window.ingestAPI.openTest();
   else { ib.disabled=true; ib.title='desktop app only'; } }
+{ const ig=document.getElementById('ingest-grid');
+  if(window.ingestAPI) ig.onclick=()=>window.ingestAPI.openGrid();
+  else { ig.disabled=true; ig.title='desktop app only'; } }
 document.getElementById('fullscreen').onclick=()=>{
   if(document.fullscreenElement){ document.exitFullscreen(); }
   else { stage.requestFullscreen && stage.requestFullscreen().catch(()=>{}); }

@@ -58,14 +58,29 @@ ipcMain.handle('ingest-start', (e, { courtId, url }) => {
     onAudio:  d => { try { wc.send('ingest-audio',  d); } catch (_) {} },
     onStatus: d => { try { wc.send('ingest-status', d); } catch (_) {} },
   });
+  f.ownerId = wc.id;   // so the owning window's 'closed' handler can stop only its own feeds
   feeds.set(courtId, f); f.start();
   return { ok: true };
 });
 ipcMain.handle('ingest-stop', (e, { courtId }) => { const f = feeds.get(courtId); if (f) { f.stop(); feeds.delete(courtId); } return { ok: true }; });
+// stop and drop any feeds a since-closed ingest window (single-stream beta or multi-court grid) left running
+function stopFeedsOwnedBy(webContentsId) {
+  for (const [id, f] of feeds) { if (f.ownerId === webContentsId) { f.stop(); feeds.delete(id); } }
+}
 ipcMain.handle('open-ingest-test', () => {
   const w = new BrowserWindow({ width: 1000, height: 780, backgroundColor: '#0b0e12', autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: false, nodeIntegration: false, backgroundThrottling: false } });
   w.setMenuBarVisibility(false); w.loadFile('ingest-test.html');
+  const ownerId = w.webContents.id;
+  w.on('closed', () => stopFeedsOwnedBy(ownerId));
+  return { ok: true };
+});
+ipcMain.handle('open-ingest-grid', () => {
+  const w = new BrowserWindow({ width: 1440, height: 900, backgroundColor: '#0b0e12', autoHideMenuBar: true,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: false, nodeIntegration: false, backgroundThrottling: false } });
+  w.setMenuBarVisibility(false); w.loadFile('ingest-grid.html');
+  const ownerId = w.webContents.id;
+  w.on('closed', () => stopFeedsOwnedBy(ownerId));
   return { ok: true };
 });
 

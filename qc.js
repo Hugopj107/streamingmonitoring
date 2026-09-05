@@ -187,3 +187,6 @@ function qcAdvice(q) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { analyseQC, consistency, falseColorInto, rgbBalanceInto, qcAdvice, QCStabilizer, QC_DEFAULTS };
 }
+// class declarations (unlike function declarations) don't auto-attach to the global object,
+// so window.QCStabilizer needs an explicit export for browser/renderer use.
+if (typeof window !== 'undefined') window.QCStabilizer = QCStabilizer;
