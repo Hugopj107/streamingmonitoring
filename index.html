@@ -104,7 +104,7 @@
   .igrid-ovl.on{display:block}
   .ibar{display:flex;gap:6px;margin:10px 0 8px}
   .ibar button{padding:6px 11px;font-size:11px}
-  .listen.on,.igridtoggle.on,.ilock.locked,.ifs.on{border-color:var(--accent);color:var(--accent)}
+  .listen.on,.igridtoggle.on,.ilock.locked,.ifs.on,#auto-cycle.on{border-color:var(--accent);color:var(--accent)}
   .icard:fullscreen{width:100vw;height:100vh;max-width:none;background:var(--bg);border:none;border-radius:0;
     display:flex;flex-direction:column;padding:28px;gap:10px}
   .icard:fullscreen .istage{flex:1;min-height:0;aspect-ratio:auto}
@@ -157,6 +157,7 @@
     <h2>Direct ingest courts (SRT/RTSP, one ffmpeg per court)</h2>
     <div class="bar" style="margin-bottom:12px">
       <button id="add-ingest">+ Add SRT court</button>
+      <button id="auto-cycle" title="Automatically switch which court's audio plays, rotating every ~60s through all running courts">🔀 Auto-cycle audio</button>
       <span class="chip" id="ingest-ff"></span>
     </div>
     <div class="igrid" id="ingest-grid"></div>
@@ -877,7 +878,8 @@ function addIngestCourt(initial){
   };
   ic.stopBtn.onclick=()=>{
     window.ingestAPI.stop(feedKey);
-    if(ingestListeningKey===feedKey) stopIngestListening();
+    const wasListening=ingestListeningKey===feedKey;
+    if(wasListening) stopIngestListening();
     if(ic.lockRef){ try{ic.lockRef.kp.delete();ic.lockRef.des.delete();}catch(e){} ic.lockRef=null;
       ic.lockBtn.classList.remove('locked'); ic.lockBtn.textContent='Lock';
       badgeIngest(ic.lineupBadge,'LINEUP','—'); ic.lineupBadge.title=''; }
@@ -886,15 +888,21 @@ function addIngestCourt(initial){
     ic.urlInput.disabled=false;
     ic.placeholderEl.textContent='not started'; ic.placeholderEl.style.display='flex';
     setIngestState(ic,'STOPPED',false);
+    if(wasListening && autoCycleOn) autoCycleTick();   // ic.running is false now, so it won't be re-picked
   };
-  ic.listenBtn.onclick=()=>{ ingestListeningKey===feedKey ? stopIngestListening() : startIngestListening(ic); };
+  ic.listenBtn.onclick=()=>{
+    if(autoCycleOn) stopAutoCycle();   // a manual pick takes control back from the rotation
+    ingestListeningKey===feedKey ? stopIngestListening() : startIngestListening(ic);
+  };
   ic.rmBtn.onclick=()=>{
     if(document.fullscreenElement===ic.el) document.exitFullscreen();
     if(ic.running) window.ingestAPI.stop(feedKey);
-    if(ingestListeningKey===feedKey) stopIngestListening();
+    const wasListening=ingestListeningKey===feedKey;
+    if(wasListening) stopIngestListening();
     if(ic.lockRef){ try{ic.lockRef.kp.delete();ic.lockRef.des.delete();}catch(e){} }
     ingestCourts=ingestCourts.filter(x=>x!==ic);
     el.remove(); saveIngestConfig();
+    if(wasListening && autoCycleOn) autoCycleTick();   // ic is out of ingestCourts now, so it won't be re-picked
   };
   ic.urlInput.oninput=saveIngestConfig;
   return ic;
@@ -962,6 +970,33 @@ function onIngestPCM(feedKey,buf){
   ingestPlaySources.push(src);
 }
 
+// ---- auto-cycle audio: rotate the solo listen target through every RUNNING court on a timer,
+// so you passively hear each in turn instead of picking one manually. Reuses the same exclusive
+// startIngestListening()/stopIngestListening() a manual click uses — there's still only ever
+// one court playing at a time. ----
+const AUTO_CYCLE_MS=60000;
+let autoCycleOn=false, autoCycleTimer=null, autoCycleIdx=-1;
+function autoCycleTick(){
+  const running=ingestCourts.filter(c=>c.running);
+  if(!running.length) return;   // nothing to listen to yet — next tick (or the next Start) picks it up
+  autoCycleIdx=(autoCycleIdx+1)%running.length;
+  startIngestListening(running[autoCycleIdx]);
+}
+function startAutoCycle(){
+  if(autoCycleOn) return;
+  autoCycleOn=true;
+  document.getElementById('auto-cycle').classList.add('on');
+  autoCycleTick();
+  autoCycleTimer=setInterval(autoCycleTick, AUTO_CYCLE_MS);
+}
+function stopAutoCycle(){
+  if(!autoCycleOn) return;
+  autoCycleOn=false;
+  document.getElementById('auto-cycle').classList.remove('on');
+  clearInterval(autoCycleTimer); autoCycleTimer=null;
+  stopIngestListening();
+}
+
 // ---- config persistence (SRT URLs only — court assignment is re-picked on restart, same as regions) ----
 let ingestSaveTimer=null;
 function saveIngestConfig(){
@@ -982,6 +1017,7 @@ if(window.ingestAPI){
   window.ingestAPI.onStatus(d=>{ const ic=ingestCourts.find(x=>x.feedKey===d.courtId); if(ic && d.state==='NO FRAMES') setIngestState(ic,'NO FRAMES',true); });
   window.ingestAPI.onPCM(d=>onIngestPCM(d.courtId,d.buf));
   document.getElementById('add-ingest').onclick=()=>{ addIngestCourt(); saveIngestConfig(); };
+  document.getElementById('auto-cycle').onclick=()=>{ autoCycleOn ? stopAutoCycle() : startAutoCycle(); };
   (async()=>{
     if(!window.configStore) return;
     const cfg=await window.configStore.get();
