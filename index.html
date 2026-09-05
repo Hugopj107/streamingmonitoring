@@ -83,7 +83,7 @@
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
 
   /* ---- direct-ingest courts (SRT/RTSP, one ffmpeg per court) ---- */
-  .igrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+  .igrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
   .icard{margin-top:0}
   .ihead{display:flex;gap:8px;margin-bottom:10px;align-items:center}
   .iurl{flex:1;min-width:0;background:#0b0e12;border:1px solid var(--line);color:var(--ink);
@@ -96,6 +96,7 @@
   .ibar button{padding:6px 11px;font-size:11px}
   .listen.on{border-color:var(--accent);color:var(--accent)}
   .istatus{display:flex;align-items:center;gap:10px;font-size:11px;margin-bottom:8px}
+  .istatus .chip{margin-left:0}
   .st{padding:2px 7px;border-radius:4px;display:inline-block;font-size:10px;letter-spacing:.08em;cursor:default}
   .st.ok{background:rgba(78,201,176,.14);color:var(--accent)} .st.bad{background:rgba(255,43,61,.18);color:var(--warn)}
   .ibadges{display:flex;gap:6px;flex-wrap:wrap;font-size:10px}
