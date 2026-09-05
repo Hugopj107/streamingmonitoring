@@ -100,9 +100,11 @@
   .istage{aspect-ratio:16/9}
   .istage.alert{border-color:var(--warn);box-shadow:inset 0 0 40px rgba(255,43,61,.5);animation:pulse .5s infinite}
   .istage canvas{width:100%;height:100%;display:block;object-fit:contain;background:#000}
+  .igrid-ovl{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;display:none;z-index:4}
+  .igrid-ovl.on{display:block}
   .ibar{display:flex;gap:6px;margin:10px 0 8px}
   .ibar button{padding:6px 11px;font-size:11px}
-  .listen.on{border-color:var(--accent);color:var(--accent)}
+  .listen.on,.igridtoggle.on,.ilock.locked{border-color:var(--accent);color:var(--accent)}
   .istatus{display:flex;align-items:center;gap:10px;font-size:11px;margin-bottom:8px}
   .istatus .chip{margin-left:0}
   .st{padding:2px 7px;border-radius:4px;display:inline-block;font-size:10px;letter-spacing:.08em;cursor:default}
@@ -763,12 +765,15 @@ function addIngestCourt(initial){
     </div>
     <div class="stage istage">
       <canvas width="384" height="216"></canvas>
+      <img class="igrid-ovl" src="assets/tdi_alignment_grid.png" alt="">
       <div class="placeholder">not started</div>
     </div>
     <div class="ibar">
       <button class="istart">Start</button>
       <button class="istop" disabled>Stop</button>
       <button class="listen" disabled title="Play this court's audio out loud (only one court at a time)">🔈</button>
+      <button class="igridtoggle" title="Toggle alignment grid overlay">⊞</button>
+      <button class="ilock" disabled title="Lock this framing as the line-up reference">Lock</button>
       <button class="irm">×</button>
     </div>
     <div class="istatus">
@@ -779,6 +784,7 @@ function addIngestCourt(initial){
       <span class="badge na iexp viewtoggle" title="Click to overlay the false-colour exposure view">EXP —</span>
       <span class="badge na iwb viewtoggle" title="Click to overlay the RGB white-balance view">WB —</span>
       <span class="badge na iaud">AUD —</span>
+      <span class="badge na ilineup" title="">LINEUP —</span>
       <span class="outlier" style="display:none">⚠ OUTLIER</span>
     </div>`;
   document.getElementById('ingest-grid').appendChild(el);
@@ -792,16 +798,18 @@ function addIngestCourt(initial){
   const off=document.createElement('canvas'); off.width=PW; off.height=PH;
   const ox=off.getContext('2d',{willReadFrequently:true});
 
+  const gridOvlEl=el.querySelector('.igrid-ovl');
   const ic={
     id:nextIngestId++, feedKey, el,
     urlInput:el.querySelector('.iurl'), sel:el.querySelector('.assign'), nm:el.querySelector('.iname'),
     startBtn:el.querySelector('.istart'), stopBtn:el.querySelector('.istop'),
-    listenBtn:el.querySelector('.listen'), rmBtn:el.querySelector('.irm'),
+    listenBtn:el.querySelector('.listen'), gridBtn:el.querySelector('.igridtoggle'),
+    lockBtn:el.querySelector('.ilock'), rmBtn:el.querySelector('.irm'),
     stageEl:el.querySelector('.istage'), stateEl:el.querySelector('.istate'), pctEl:el.querySelector('.ipct'),
     placeholderEl:el.querySelector('.placeholder'),
     expBadge:el.querySelector('.iexp'), wbBadge:el.querySelector('.iwb'), audBadge:el.querySelector('.iaud'),
-    outlierEl:el.querySelector('.outlier'),
-    cx, off, ox,
+    lineupBadge:el.querySelector('.ilineup'), outlierEl:el.querySelector('.outlier'),
+    cx, off, ox, raw, lockRef:null, driftNotified:0,
     x:0,y:0,w:1,h:1, ref:null, running:false,
     on:false, reason:null, badSince:null, goodSince:null, onSince:0, stillMs:0, fracA:null, movA:null, baseFlick:null,
     lastLog:null, court:null, courtKey:null, _t:0,
@@ -818,6 +826,9 @@ function addIngestCourt(initial){
   ic.sel.onchange=()=>assignCourt(ic, ic.sel.value, 'SRT '+ic.id);
   ic.expBadge.onclick=()=>setIngestView(ic,'false');
   ic.wbBadge.onclick=()=>setIngestView(ic,'rgb');
+  ic.gridBtn.onclick=()=>{ const on=!gridOvlEl.classList.contains('on');
+    gridOvlEl.classList.toggle('on',on); ic.gridBtn.classList.toggle('on',on); };
+  ic.lockBtn.onclick=()=>toggleIngestLock(ic);
 
   ic.onFrame=({w,h,buf,frozenMs})=>{
     const arr=new Uint8ClampedArray(buf.buffer||buf);
@@ -847,13 +858,18 @@ function addIngestCourt(initial){
     ic.placeholderEl.style.display='none'; setIngestState(ic,'CONNECTING…',false);
     window.ingestAPI.start(feedKey,u);
     ic.running=true; ic.startBtn.disabled=true; ic.stopBtn.disabled=false; ic.listenBtn.disabled=false;
+    ic.lockBtn.disabled=false;
     ic.urlInput.disabled=true;
     saveIngestConfig();
   };
   ic.stopBtn.onclick=()=>{
     window.ingestAPI.stop(feedKey);
     if(ingestListeningKey===feedKey) stopIngestListening();
+    if(ic.lockRef){ try{ic.lockRef.kp.delete();ic.lockRef.des.delete();}catch(e){} ic.lockRef=null;
+      ic.lockBtn.classList.remove('locked'); ic.lockBtn.textContent='Lock';
+      badgeIngest(ic.lineupBadge,'LINEUP','—'); ic.lineupBadge.title=''; }
     ic.running=false; ic.startBtn.disabled=false; ic.stopBtn.disabled=true; ic.listenBtn.disabled=true;
+    ic.lockBtn.disabled=true;
     ic.urlInput.disabled=false;
     ic.placeholderEl.textContent='not started'; ic.placeholderEl.style.display='flex';
     setIngestState(ic,'STOPPED',false);
@@ -862,6 +878,7 @@ function addIngestCourt(initial){
   ic.rmBtn.onclick=()=>{
     if(ic.running) window.ingestAPI.stop(feedKey);
     if(ingestListeningKey===feedKey) stopIngestListening();
+    if(ic.lockRef){ try{ic.lockRef.kp.delete();ic.lockRef.des.delete();}catch(e){} }
     ingestCourts=ingestCourts.filter(x=>x!==ic);
     el.remove(); saveIngestConfig();
   };
@@ -1203,8 +1220,95 @@ function measureDrift(r){
 function setDrift(r,cls,txt){ if(r.driftEl){ r.driftEl.className='drift show '+cls; r.driftEl.textContent=txt; } }
 function notifyDrift(name,state,detail){ try{ if(window.Notification){ if(Notification.permission==='granted') new Notification(name+' line-up '+state, {body:detail||'camera moved'});
   else if(Notification.permission!=='denied') Notification.requestPermission(); } }catch(e){} }
-// slow measurement loop — independent of the render loop, ~1.5 Hz, only for locked regions
-setInterval(()=>{ if(cvState!=='ready') return; for(const r of regions){ if(r.lockRef && !r.dragging) measureDrift(r); } }, 700);
+
+// ---- line-up drift for ingest courts — same ORB/homography approach, tolerances, and
+// shared cv/ocv scratch state as above, just reading each tile's own raw (undoctored) frame
+// instead of cropping a region out of the shared capture video ----
+function ingestGray(ic){
+  if(!cv||!ic.raw) return null;
+  const w=LOCK_W, h=Math.max(2,Math.round(216*LOCK_W/384));
+  ocv.width=w; ocv.height=h;
+  try{ ocvx.drawImage(ic.raw, 0,0,384,216, 0,0,w,h); }catch(e){ return null; }
+  const src=cv.matFromImageData(ocvx.getImageData(0,0,w,h));
+  const gray=new cv.Mat(); cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY); src.delete();
+  return gray;
+}
+function setIngestDrift(ic,cls,txt){
+  badgeIngest(ic.lineupBadge,'LINEUP', cls==='good'?'PASS':cls==='check'?'CHECK':'FAIL');
+  ic.lineupBadge.title=txt;
+}
+function toggleIngestLock(ic){
+  if(ic.lockRef){ // unlock
+    try{ ic.lockRef.kp.delete(); ic.lockRef.des.delete(); }catch(e){}
+    ic.lockRef=null; ic.lockBtn.classList.remove('locked'); ic.lockBtn.textContent='Lock';
+    badgeIngest(ic.lineupBadge,'LINEUP','—'); ic.lineupBadge.title=''; return;
+  }
+  if(cvState!=='ready'){ loadCV(); badgeIngest(ic.lineupBadge,'LINEUP','—'); ic.lineupBadge.title='loading vision…';
+    const wait=setInterval(()=>{ if(cvState==='ready'){ clearInterval(wait); doIngestLock(ic); }
+      else if(cvState==='failed'){ clearInterval(wait); ic.lineupBadge.title='vision unavailable'; } },200);
+    return;
+  }
+  doIngestLock(ic);
+}
+function doIngestLock(ic){
+  const gray=ingestGray(ic); if(!gray){ ic.lineupBadge.title='no frame'; return; }
+  try{
+    const orb=makeORB(), kp=new cv.KeyPointVector(), des=new cv.Mat();
+    orb.detectAndCompute(gray, emptyMask(), kp, des); orb.delete();
+    if(kp.size()<MIN_MATCHES){ kp.delete(); des.delete(); gray.delete();
+      badgeIngest(ic.lineupBadge,'LINEUP','FAIL'); ic.lineupBadge.title='too few features — reframe & retry'; return; }
+    ic.lockRef={kp,des,at:Date.now()}; gray.delete();
+    ic.lockBtn.classList.add('locked'); ic.lockBtn.textContent='Locked ✓';
+    setIngestDrift(ic,'good','GOOD · locked');
+  }catch(e){ try{gray.delete&&gray.delete();}catch(_){} badgeIngest(ic.lineupBadge,'LINEUP','FAIL'); ic.lineupBadge.title='lock failed'; }
+}
+let ingestMatcher=null;
+function measureIngestDrift(ic){
+  if(!cv||!ic.lockRef) return;
+  const gray=ingestGray(ic); if(!gray) return;
+  let kp2=null,des2=null,src=null,dst=null,H=null,mask=null;
+  try{
+    const orb=makeORB(); kp2=new cv.KeyPointVector(); des2=new cv.Mat();
+    orb.detectAndCompute(gray, emptyMask(), kp2, des2); orb.delete();
+    if(kp2.size()<MIN_MATCHES){ setIngestDrift(ic,'bad','LOW MATCH'); return; }
+    if(!ingestMatcher) ingestMatcher=new cv.BFMatcher(cv.NORM_HAMMING,false);
+    const knn=new cv.DMatchVectorVector(); ingestMatcher.knnMatch(ic.lockRef.des,des2,knn,2);
+    const gm=[];
+    for(let i=0;i<knn.size();i++){ const m=knn.get(i); if(m.size()<2) continue; const a=m.get(0),b=m.get(1); if(a.distance<0.75*b.distance) gm.push(a); }
+    knn.delete();
+    if(gm.length<MIN_MATCHES){ setIngestDrift(ic,'bad','LOW MATCH ('+gm.length+')'); return; }
+    const sp=[], dp=[];
+    for(const m of gm){ const p1=ic.lockRef.kp.get(m.queryIdx).pt, p2=kp2.get(m.trainIdx).pt; sp.push(p1.x,p1.y); dp.push(p2.x,p2.y); }
+    src=cv.matFromArray(gm.length,1,cv.CV_32FC2,sp); dst=cv.matFromArray(gm.length,1,cv.CV_32FC2,dp);
+    mask=new cv.Mat(); H=cv.findHomography(src,dst,cv.RANSAC,4.0,mask);
+    if(H.empty()){ setIngestDrift(ic,'bad','NO FIT'); return; }
+    let inl=0; for(let i=0;i<mask.rows;i++) inl+=mask.data[i]?1:0;
+    if(inl<MIN_MATCHES){ setIngestDrift(ic,'bad','LOW MATCH ('+inl+')'); return; }
+    const a=H.doubleAt(0,0), b=H.doubleAt(0,1), c=H.doubleAt(1,0), d=H.doubleAt(1,1);
+    const sx=Math.hypot(a,c), sy=Math.hypot(b,d), scale=(sx+sy)/2;
+    const rot=Math.atan2(c,a)*180/Math.PI, tx=H.doubleAt(0,2), ty=H.doubleAt(1,2), zoom=(scale-1)*100;
+    const t=Math.max(Math.abs(tx),Math.abs(ty));
+    let cls='good', st='GOOD';
+    if(t>HARD_TRANS||Math.abs(rot)>HARD_ROT||Math.abs(zoom)>HARD_ZOOM){ cls='bad'; st='NOT GOOD'; }
+    else if(t>TOL_TRANS||Math.abs(rot)>TOL_ROT||Math.abs(zoom)>TOL_ZOOM){ cls='check'; st='CHECK'; }
+    const parts=[];
+    if(Math.abs(rot)>0.15) parts.push('ROT '+(rot>0?'L':'R')+' '+Math.abs(rot).toFixed(2)+'°');
+    if(Math.abs(tx)>3) parts.push('PAN '+(tx>0?'L':'R')+' '+Math.abs(tx).toFixed(0)+'px');
+    if(Math.abs(ty)>3) parts.push('TILT '+(ty>0?'U':'D')+' '+Math.abs(ty).toFixed(0)+'px');
+    if(Math.abs(zoom)>1) parts.push('ZOOM '+(zoom>0?'OUT':'IN')+' '+Math.abs(zoom).toFixed(1)+'%');
+    setIngestDrift(ic, cls, st+(parts.length?(' · '+parts.join(' ')):'')+' · '+inl+' pts');
+    if(st==='NOT GOOD' && (!ic.driftNotified || Date.now()-ic.driftNotified>20000)){ ic.driftNotified=Date.now();
+      notifyDrift(ic.court, st, parts.join(' ')); }
+    if(st!=='NOT GOOD') ic.driftNotified=0;
+  }catch(e){ /* transient — ignore */ }
+  finally{ [gray,kp2,des2,src,dst,H,mask].forEach(m=>{ try{ m&&m.delete&&m.delete(); }catch(_){} }); }
+}
+
+// slow measurement loop — independent of the render loop, ~1.5 Hz, only for locked regions/courts
+setInterval(()=>{ if(cvState!=='ready') return;
+  for(const r of regions){ if(r.lockRef && !r.dragging) measureDrift(r); }
+  for(const ic of ingestCourts){ if(ic.lockRef) measureIngestDrift(ic); }
+}, 700);
 
 // start
 seed();
