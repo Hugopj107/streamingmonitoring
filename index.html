@@ -81,6 +81,28 @@
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:14px}
   .card h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
+
+  /* ---- direct-ingest courts (SRT/RTSP, one ffmpeg per court) ---- */
+  .igrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+  .icard{margin-top:0}
+  .ihead{display:flex;gap:8px;margin-bottom:10px;align-items:center}
+  .iurl{flex:1;min-width:0;background:#0b0e12;border:1px solid var(--line);color:var(--ink);
+    padding:7px 10px;border-radius:6px;font-family:var(--mono);font-size:11px}
+  .iurl:focus{outline:none;border-color:var(--accent)}
+  .istage{aspect-ratio:16/9}
+  .istage.alert{border-color:var(--warn);box-shadow:inset 0 0 40px rgba(255,43,61,.5);animation:pulse .5s infinite}
+  .istage canvas{width:100%;height:100%;display:block;object-fit:contain;background:#000}
+  .ibar{display:flex;gap:6px;margin:10px 0 8px}
+  .ibar button{padding:6px 11px;font-size:11px}
+  .listen.on{border-color:var(--accent);color:var(--accent)}
+  .istatus{display:flex;align-items:center;gap:10px;font-size:11px;margin-bottom:8px}
+  .st{padding:2px 7px;border-radius:4px;display:inline-block;font-size:10px;letter-spacing:.08em;cursor:default}
+  .st.ok{background:rgba(78,201,176,.14);color:var(--accent)} .st.bad{background:rgba(255,43,61,.18);color:var(--warn)}
+  .ibadges{display:flex;gap:6px;flex-wrap:wrap;font-size:10px}
+  .badge{padding:2px 7px;border-radius:4px;font-weight:700}
+  .pass{color:#04110d;background:var(--accent)} .check{color:#04110d;background:#c58a1a} .fail{color:#fff;background:var(--warn)} .na{color:var(--dim);background:#20272f}
+  .outlier{color:#04110d;background:#c58a1a;padding:2px 7px;border-radius:4px;font-weight:700}
+  .icard select.assign{position:static;max-width:none;width:auto}
   .ctl .row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
   .ctl .val{color:var(--accent)}
   .ctl .hint{color:var(--dim);font-size:10px;margin-top:5px;line-height:1.5}
@@ -102,8 +124,7 @@
     <button id="report">Day report</button>
     <button id="export-finals">Export last match ▾</button>
     <button id="fullscreen">⛶ Fullscreen</button>
-    <button id="ingest-beta" title="Try direct SRT/RTSP ingest (no screen-share)">Direct ingest (beta)</button>
-    <button id="ingest-grid" title="Multi-court grid: one direct SRT/RTSP ingest per court">Multi-court grid (beta)</button>
+    <button id="ingest-beta" title="Try direct SRT/RTSP ingest (no screen-share)">Direct ingest (single-stream test)</button>
     <span class="chip" id="cap-status"></span>
     <span class="chip"><span id="fps">0</span> fps</span>
   </div>
@@ -140,7 +161,16 @@
   </div>
 
   <div class="card">
-    <h2>Tuning (applies to every region)</h2>
+    <h2>Direct ingest courts (SRT/RTSP, one ffmpeg per court)</h2>
+    <div class="bar" style="margin-bottom:12px">
+      <button id="add-ingest">+ Add SRT court</button>
+      <span class="chip" id="ingest-ff"></span>
+    </div>
+    <div class="igrid" id="ingest-grid"></div>
+  </div>
+
+  <div class="card">
+    <h2>Tuning (applies to every region and ingest court)</h2>
     <div class="grid">
       <div class="ctl">
         <div class="row"><span>Trigger threshold</span><span class="val"><span id="v-trig">45</span>%</span></div>
@@ -191,6 +221,7 @@
   </div>
 </div>
 
+<script src="qc.js"></script>
 <script>
 const vid=document.getElementById('vid'), stage=document.getElementById('stage'),
       ph=document.getElementById('ph'), fpsEl=document.getElementById('fps');
@@ -307,6 +338,50 @@ const SMOOTH=0.4;         // EMA weight on raw signals (lower = steadier)
 function flag(r,on,text){ r.el.classList.toggle('alert',on); r.tag.textContent = text; }
 function reset(r){ r.on=false; r.reason=null; r.badSince=null; r.goodSince=null; r.onSince=0;
   r.stillMs=0; r.fracA=null; r.movA=null; r.baseFlick=null; }
+
+// Shared detection state-machine — used by both screen-capture regions (below, fed from the
+// one shared video) and direct-ingest courts (fed independently, one ffmpeg frame stream per
+// court; see "Direct ingest courts" further down). Everything downstream — the Tuning panel,
+// uptime log, Sheets export, day report — is identical either way; only how frames arrive differs.
+// trueFrozenMs (ingest only): ffmpeg's byte-identical-frame signal, a more accurate freeze
+// check than the flicker heuristic below (which exists only because screen-capture has no
+// frame-identity signal of its own) — treated as an OR against the heuristic, never a downgrade.
+function evaluateRegion(r, frac, moving, luma, dt, now, captureStalled, havePrev, trueFrozenMs){
+  // smooth the raw signals so a single jittery frame can't cross a threshold
+  r.fracA = r.fracA==null? frac : r.fracA+SMOOTH*(frac-r.fracA);
+  r.movA  = r.movA==null ? moving : r.movA +SMOOTH*(moving-r.movA);
+  // frozen: almost nothing flickering, sustained
+  // freeze is judged RELATIVE to each feed's own normal flicker (auto-calibrating),
+  // so a naturally clean camera isn't mistaken for frozen during a lull
+  const base = r.baseFlick ?? r.movA ?? 0.01;
+  const freezeThr = Math.max(0.0004, base*P.freezeRel);
+  // ...but NOT while the whole capture has stalled (all regions still at once = pipeline, not a real freeze)
+  if(havePrev && r.movA<freezeThr && !captureStalled) r.stillMs=(r.stillMs||0)+dt; else r.stillMs=0;
+  // learn the baseline only when clearly live (well above the freeze line) and not alerting
+  if(!r.on && r.movA>freezeThr*2) r.baseFlick = r.baseFlick==null? r.movA : r.baseFlick+0.01*(r.movA-r.baseFlick);
+  // what the region wants to be, right now (priority order)
+  let raw=null;
+  if(luma<BLACK_LUMA)                                                                    raw='NO SIGNAL';
+  else if(r.stillMs>P.freeze*1000 || (trueFrozenMs && trueFrozenMs>=P.freeze*1000))       raw='FROZEN';
+  else if(r.fracA>=P.trig)                                                                raw='CHANGE';
+  // latching state machine: raise after ENTER_MS, hold min P.hold, release after P.exit clear
+  if(raw){ r.badSince = r.badSince ?? now; r.goodSince=null; }
+  else   { r.goodSince = r.goodSince ?? now; r.badSince=null; }
+  if(!r.on && raw && now-r.badSince>=ENTER_MS){ r.on=true; r.reason=raw; r.onSince=now; }
+  else if(r.on && raw && raw!==r.reason && now-r.badSince>=ENTER_MS){ r.reason=raw; }
+  else if(r.on && !raw && r.goodSince!=null
+          && now-r.goodSince>=P.exit*1000 && now-r.onSince>=P.hold*1000){ r.on=false; r.reason=null; }
+  // safety net: a region stuck in CHANGE past the timeout accepts the current picture as
+  // the new normal and clears (ref re-inits next frame). Scoped to CHANGE so a genuinely
+  // frozen/black feed stays flagged for as long as it's actually frozen/black.
+  if(r.on && r.reason==='CHANGE' && now-r.onSince>=P.rebase*1000){ r.ref=null; reset(r); }
+  const cur = r.on ? r.reason : 'OK';
+  const mId = natsCurrentMId[r.courtKey]||'—';
+  const key = mId+'|'+cur;
+  if(key !== r.lastLog){ r.lastLog=key; logEvent(r.court, mId, cur); }
+  return cur;
+}
+
 function step(){
   if(vid.readyState>=2 && (vid.videoWidth||stream)){
     const now=performance.now(); const dt=now-lastT; lastT=now; lastFrame=now;
@@ -314,42 +389,12 @@ function step(){
     const data=octx.getImageData(0,0,PW,PH).data;
     for(let i=0,j=0;i<grayBuf.length;i++,j+=4) grayBuf[i]=0.299*data[j]+0.587*data[j+1]+0.114*data[j+2];
     let zeroFlick=0, activeCnt=0;   // for capture-stall detection (whole capture goes still at once)
+    const havePrev=!!prevGray;
     for(const r of regions){
       if(r.dragging){ reset(r); flag(r,false,'—'); continue; }
       const {frac,moving,luma}=analyse(r,grayBuf,prevGray);
-      // smooth the raw signals so a single jittery frame can't cross a threshold
-      r.fracA = r.fracA==null? frac : r.fracA+SMOOTH*(frac-r.fracA);
-      r.movA  = r.movA==null ? moving : r.movA +SMOOTH*(moving-r.movA);
+      evaluateRegion(r, frac, moving, luma, dt, now, captureStalled, havePrev);
       if(luma>=BLACK_LUMA){ activeCnt++; if(r.movA<0.0008) zeroFlick++; }
-      // frozen: almost nothing flickering, sustained
-      // freeze is judged RELATIVE to each feed's own normal flicker (auto-calibrating),
-      // so a naturally clean camera isn't mistaken for frozen during a lull
-      const base = r.baseFlick ?? r.movA ?? 0.01;
-      const freezeThr = Math.max(0.0004, base*P.freezeRel);
-      // ...but NOT while the whole capture has stalled (all regions still at once = pipeline, not a real freeze)
-      if(prevGray && r.movA<freezeThr && !captureStalled) r.stillMs=(r.stillMs||0)+dt; else r.stillMs=0;
-      // learn the baseline only when clearly live (well above the freeze line) and not alerting
-      if(!r.on && r.movA>freezeThr*2) r.baseFlick = r.baseFlick==null? r.movA : r.baseFlick+0.01*(r.movA-r.baseFlick);
-      // what the region wants to be, right now (priority order)
-      let raw=null;
-      if(luma<BLACK_LUMA)              raw='NO SIGNAL';
-      else if(r.stillMs>P.freeze*1000) raw='FROZEN';
-      else if(r.fracA>=P.trig)         raw='CHANGE';
-      // latching state machine: raise after ENTER_MS, hold min P.hold, release after P.exit clear
-      if(raw){ r.badSince = r.badSince ?? now; r.goodSince=null; }
-      else   { r.goodSince = r.goodSince ?? now; r.badSince=null; }
-      if(!r.on && raw && now-r.badSince>=ENTER_MS){ r.on=true; r.reason=raw; r.onSince=now; }
-      else if(r.on && raw && raw!==r.reason && now-r.badSince>=ENTER_MS){ r.reason=raw; }
-      else if(r.on && !raw && r.goodSince!=null
-              && now-r.goodSince>=P.exit*1000 && now-r.onSince>=P.hold*1000){ r.on=false; r.reason=null; }
-      // safety net: a region stuck in CHANGE past the timeout accepts the current picture as
-      // the new normal and clears (ref re-inits next frame). Scoped to CHANGE so a genuinely
-      // frozen/black feed stays flagged for as long as it's actually frozen/black.
-      if(r.on && r.reason==='CHANGE' && now-r.onSince>=P.rebase*1000){ r.ref=null; reset(r); }
-      const cur = r.on ? r.reason : 'OK';
-      const mId = natsCurrentMId[r.courtKey]||'—';
-      const key = mId+'|'+cur;
-      if(key !== r.lastLog){ r.lastLog=key; logEvent(r.court, mId, cur); }
       flag(r, r.on, r.on ? r.reason : Math.round((r.fracA||0)*100)+'% · f'+((r.movA||0)*100).toFixed(1));
     }
     if(!prevGray) prevGray=new Float32Array(PW*PH);
@@ -547,9 +592,6 @@ document.getElementById('report').onclick=downloadReport;
 { const ib=document.getElementById('ingest-beta');
   if(window.ingestAPI) ib.onclick=()=>window.ingestAPI.openTest();
   else { ib.disabled=true; ib.title='desktop app only'; } }
-{ const ig=document.getElementById('ingest-grid');
-  if(window.ingestAPI) ig.onclick=()=>window.ingestAPI.openGrid();
-  else { ig.disabled=true; ig.title='desktop app only'; } }
 document.getElementById('fullscreen').onclick=()=>{
   if(document.fullscreenElement){ document.exitFullscreen(); }
   else { stage.requestFullscreen && stage.requestFullscreen().catch(()=>{}); }
@@ -603,8 +645,9 @@ const courtLabel=c=>deriveTName(c.url)+' · Court '+c.courtId;   // unique, read
 function fillSelect(r){ if(!r.sel) return; const cur=r.courtKey||'';
   r.sel.innerHTML='<option value="">— court —</option>'+lastRoster.map(c=>`<option value="${courtKey(c)}">${deriveTName(c.url)} — Court ${c.courtId}</option>`).join('');
   r.sel.value=cur; }
-function assignCourt(r,val){
-  if(!val){ r.courtId=null; r.tId=null; r.courtKey=null; r.court='CAM '+r.id; r.nm.textContent='CAM '+r.id; r.el.title=''; r.lastLog=null; return; }
+function assignCourt(r,val,fallback){
+  fallback = fallback || ('CAM '+r.id);
+  if(!val){ r.courtId=null; r.tId=null; r.courtKey=null; r.court=fallback; r.nm.textContent=fallback; r.el.title=''; r.lastLog=null; return; }
   const c=lastRoster.find(x=>courtKey(x)===val); if(!c) return;
   r.courtId=c.courtId; r.tId=c.tId; r.tName=deriveTName(c.url); r.url=c.url; r.courtKey=val;
   r.court=courtLabel(c); r.nm.textContent='Court '+c.courtId+(c.mId?(' · '+c.mId):'');
@@ -622,6 +665,8 @@ function renderRoster(list){
       finishMatch(label, prev, w0, c.firstSeen);
       const r=regions.find(x=>x.courtKey===key);
       if(r){ r.ref=null; reset(r); r.lastLog=null; }
+      const ic=ingestCourts.find(x=>x.courtKey===key);
+      if(ic){ ic.ref=null; reset(ic); ic.lastLog=null; }
     }
     natsCurrentMId[key]=c.mId;
   });
@@ -634,6 +679,9 @@ function renderRoster(list){
   regions.forEach(r=>{ fillSelect(r);
     if(r.courtKey){ const c=lastRoster.find(x=>courtKey(x)===r.courtKey);
       if(c){ r.nm.textContent='Court '+c.courtId+(c.mId?(' · '+c.mId):''); r.el.title=r.tName+': '+(c.teamA||'?')+' vs '+(c.teamB||'?'); } } });
+  ingestCourts.forEach(ic=>{ fillSelect(ic);
+    if(ic.courtKey){ const c=lastRoster.find(x=>courtKey(x)===ic.courtKey);
+      if(c){ ic.nm.textContent='Court '+c.courtId+(c.mId?(' · '+c.mId):''); ic.el.title=ic.tName+': '+(c.teamA||'?')+' vs '+(c.teamB||'?'); } } });
 }
 function renderServers(list){
   const el=document.getElementById('nats-list'); if(!el) return;
@@ -642,6 +690,225 @@ function renderServers(list){
     +`<span style="color:var(--dim);font-size:10px">${sv.url}</span>`
     +`<button data-url="${sv.url}" class="rm" style="background:none;border:1px solid var(--line);color:var(--dim);border-radius:4px;cursor:pointer;font-family:var(--mono);font-size:11px;padding:1px 7px">×</button></span>`).join('');
   el.querySelectorAll('.rm').forEach(b=>b.onclick=async()=>{ await window.natsAPI.disconnect(b.dataset.url); renderServers(await window.natsAPI.servers()); });
+}
+
+// ---------- direct ingest courts (SRT/RTSP, one ffmpeg per court — no screen-share) ----------
+// Each tile runs the SAME analyse()/evaluateRegion() state machine as a screen-capture region
+// (shares the Tuning panel), assigns to a NATS court via the same dropdown regions use, and
+// calls the same logEvent() — so uptime, Sheets export, and the day report treat an ingest
+// court exactly like a region, with no changes to any of that pipeline.
+let ingestCourts=[], nextIngestId=1;
+const STATE_DETAIL = {
+  FROZEN: "Picture hasn't changed for the freeze timeout — the source may have stalled, dropped, or be holding a frame.",
+  CHANGE: 'Picture differs from the reference by the trigger threshold or more — usually a camera cut, source switch, or a graphic/overlay change. Confirm this is still the intended camera.',
+  'NO SIGNAL': 'Frame is near-black — check camera power, lens cap, or output routing.',
+  'NO FRAMES': "ffmpeg hasn't delivered a new frame in 4s+ — check the network link to the encoder.",
+  'CONNECTING…': 'Connecting to the stream…',
+};
+function setIngestState(ic,txt,bad){
+  ic.stateEl.textContent=txt; ic.stateEl.className='st '+(bad?'bad':'ok');
+  ic.stateEl.title=STATE_DETAIL[txt]||'';
+  ic.stageEl.classList.toggle('alert',!!bad);
+}
+function badgeIngest(el,prefix,v){ el.textContent=prefix+' '+v;
+  el.className='badge '+(v==='PASS'?'pass':v==='CHECK'?'check':v==='FAIL'?'fail':'na'); }
+
+function addIngestCourt(initial){
+  const feedKey='ic-'+Math.random().toString(36).slice(2,9);
+  const el=document.createElement('div'); el.className='card icard';
+  el.innerHTML=`
+    <div class="iname"></div>
+    <div class="ihead">
+      <input class="iurl" placeholder="srt://host:port?passphrase=…  or  rtsp://…" autocomplete="off">
+      <select class="assign"></select>
+    </div>
+    <div class="stage istage">
+      <canvas width="384" height="216"></canvas>
+      <div class="placeholder">not started</div>
+    </div>
+    <div class="ibar">
+      <button class="istart">Start</button>
+      <button class="istop" disabled>Stop</button>
+      <button class="listen" disabled title="Play this court's audio out loud (only one court at a time)">🔈</button>
+      <button class="irm">×</button>
+    </div>
+    <div class="istatus">
+      <span class="st ok istate" title="">WAITING</span>
+      <span class="chip">Δ<span class="ipct">0</span>%</span>
+    </div>
+    <div class="ibadges">
+      <span class="badge na iexp">EXP —</span>
+      <span class="badge na iwb">WB —</span>
+      <span class="badge na iaud">AUD —</span>
+      <span class="outlier" style="display:none">⚠ OUTLIER</span>
+    </div>`;
+  document.getElementById('ingest-grid').appendChild(el);
+
+  const cvEl=el.querySelector('canvas'), cx=cvEl.getContext('2d');
+  const off=document.createElement('canvas'); off.width=PW; off.height=PH;
+  const ox=off.getContext('2d',{willReadFrequently:true});
+
+  const ic={
+    id:nextIngestId++, feedKey, el,
+    urlInput:el.querySelector('.iurl'), sel:el.querySelector('.assign'), nm:el.querySelector('.iname'),
+    startBtn:el.querySelector('.istart'), stopBtn:el.querySelector('.istop'),
+    listenBtn:el.querySelector('.listen'), rmBtn:el.querySelector('.irm'),
+    stageEl:el.querySelector('.istage'), stateEl:el.querySelector('.istate'), pctEl:el.querySelector('.ipct'),
+    placeholderEl:el.querySelector('.placeholder'),
+    expBadge:el.querySelector('.iexp'), wbBadge:el.querySelector('.iwb'), audBadge:el.querySelector('.iaud'),
+    outlierEl:el.querySelector('.outlier'),
+    cx, off, ox,
+    x:0,y:0,w:1,h:1, ref:null, running:false,
+    on:false, reason:null, badSince:null, goodSince:null, onSince:0, stillMs:0, fracA:null, movA:null, baseFlick:null,
+    lastLog:null, court:null, courtKey:null, _t:0,
+    grayBuf:new Float32Array(PW*PH), prevGray:null,
+    silenceMs:0, lastAudioT:0,
+    qcStab: window.QCStabilizer ? new window.QCStabilizer() : null, lastQCAt:0, lastQC:null,
+  };
+  ic.court='SRT '+ic.id; ic.nm.textContent=ic.court;
+  ingestCourts.push(ic);
+  fillSelect(ic);
+  if(initial) ic.urlInput.value=initial.url||'';
+
+  ic.sel.onchange=()=>assignCourt(ic, ic.sel.value, 'SRT '+ic.id);
+
+  ic.onFrame=({w,h,buf,frozenMs})=>{
+    const arr=new Uint8ClampedArray(buf.buffer||buf);
+    cx.putImageData(new ImageData(arr,w,h),0,0);
+    ox.drawImage(cvEl,0,0,PW,PH);
+    const data=ox.getImageData(0,0,PW,PH).data;
+    for(let i=0,j=0;i<ic.grayBuf.length;i++,j+=4) ic.grayBuf[i]=0.299*data[j]+0.587*data[j+1]+0.114*data[j+2];
+    const now=performance.now(); const dt=ic._t?now-ic._t:16; ic._t=now;
+    const havePrev=!!ic.prevGray;
+    const {frac,moving,luma}=analyse(ic, ic.grayBuf, ic.prevGray);
+    evaluateRegion(ic, frac, moving, luma, dt, now, false, havePrev, frozenMs||0);
+    if(!ic.prevGray) ic.prevGray=new Float32Array(PW*PH);
+    ic.prevGray.set(ic.grayBuf);
+    ic.pctEl.textContent=Math.round((ic.fracA||0)*100);
+    setIngestState(ic, ic.on?ic.reason:'LIVE', ic.on);
+    if(now-ic.lastQCAt>700){ ic.lastQCAt=now; runIngestQC(ic, arr, w, h); }
+  };
+
+  ic.startBtn.onclick=()=>{
+    const u=ic.urlInput.value.trim(); if(!u) return;
+    ic.ref=null; ic.prevGray=null; ic.stillMs=0; ic.fracA=ic.movA=ic.baseFlick=null;
+    ic.on=false; ic.reason=null; ic.lastQC=null; ic.lastLog=null;
+    ic.placeholderEl.style.display='none'; setIngestState(ic,'CONNECTING…',false);
+    window.ingestAPI.start(feedKey,u);
+    ic.running=true; ic.startBtn.disabled=true; ic.stopBtn.disabled=false; ic.listenBtn.disabled=false;
+    ic.urlInput.disabled=true;
+    saveIngestConfig();
+  };
+  ic.stopBtn.onclick=()=>{
+    window.ingestAPI.stop(feedKey);
+    if(ingestListeningKey===feedKey) stopIngestListening();
+    ic.running=false; ic.startBtn.disabled=false; ic.stopBtn.disabled=true; ic.listenBtn.disabled=true;
+    ic.urlInput.disabled=false;
+    ic.placeholderEl.textContent='not started'; ic.placeholderEl.style.display='flex';
+    setIngestState(ic,'STOPPED',false);
+  };
+  ic.listenBtn.onclick=()=>{ ingestListeningKey===feedKey ? stopIngestListening() : startIngestListening(ic); };
+  ic.rmBtn.onclick=()=>{
+    if(ic.running) window.ingestAPI.stop(feedKey);
+    if(ingestListeningKey===feedKey) stopIngestListening();
+    ingestCourts=ingestCourts.filter(x=>x!==ic);
+    el.remove(); saveIngestConfig();
+  };
+  ic.urlInput.oninput=saveIngestConfig;
+  return ic;
+}
+
+function runIngestQC(ic,arr,w,h){
+  let q=window.analyseQC(arr,w,h);
+  if(ic.qcStab){ const s=ic.qcStab.push(q); q={exp:s.exp,wb:s.wb,verdict:s.verdict}; }
+  badgeIngest(ic.expBadge,'EXP',q.verdict.exposure); badgeIngest(ic.wbBadge,'WB',q.verdict.whiteBalance);
+  ic.lastQC={exp:q.exp,wb:q.wb};
+  refreshIngestConsistency();
+}
+function refreshIngestConsistency(){
+  const items=ingestCourts.filter(ic=>ic.lastQC).map(ic=>({court:ic.feedKey,exp:ic.lastQC.exp,wb:ic.lastQC.wb}));
+  const out=window.consistency?window.consistency(items):{};
+  ingestCourts.forEach(ic=>{ const r=out[ic.feedKey]; ic.outlierEl.style.display=(r&&r.outlier)?'inline-block':'none'; });
+}
+function onIngestAudio(ic,a){
+  const now=performance.now(), dt=ic.lastAudioT?now-ic.lastAudioT:0; ic.lastAudioT=now;
+  const rms=(a.momentary==null?-120:a.momentary), peak=(a.peak==null?-120:a.peak), ch=a.channels||[];
+  if(rms<-55) ic.silenceMs+=dt; else ic.silenceMs=0;
+  const dead=ch.length>=2 && (Math.max(...ch)-Math.min(...ch))>25 && Math.min(...ch)<-55;
+  let state='PASS';
+  if(ic.silenceMs>1500) state='FAIL';
+  else if(peak>-1) state='FAIL';
+  else if(dead) state='FAIL';
+  else if(rms<-40) state='CHECK';
+  badgeIngest(ic.audBadge,'AUD',state);
+}
+
+// ---- audible playback (opt-in, one court at a time — separate ffmpeg PCM stream per court) ----
+let ingestActx=null, ingestNextPlayAt=0, ingestPlaySources=[], ingestListeningKey=null, ingestPcmCarry=null;
+function stopIngestListening(){
+  if(!ingestListeningKey) return;
+  const prev=ingestCourts.find(x=>x.feedKey===ingestListeningKey);
+  if(prev){ prev.listenBtn.textContent='🔈'; prev.listenBtn.classList.remove('on'); }
+  ingestPlaySources.forEach(s=>{ try{s.stop();}catch(e){} });
+  ingestPlaySources=[]; ingestPcmCarry=null;
+  window.ingestAPI.playStop(ingestListeningKey);
+  ingestListeningKey=null;
+}
+function startIngestListening(ic){
+  stopIngestListening();
+  if(!ingestActx) ingestActx=new (window.AudioContext||window.webkitAudioContext)();
+  ingestActx.resume();
+  ingestListeningKey=ic.feedKey; ingestNextPlayAt=0; ingestPcmCarry=null;
+  window.ingestAPI.playStart(ic.feedKey);
+  ic.listenBtn.textContent='🔊'; ic.listenBtn.classList.add('on');
+}
+function onIngestPCM(feedKey,buf){
+  if(feedKey!==ingestListeningKey || !ingestActx) return;
+  let bytes=buf.buffer?new Uint8Array(buf.buffer,buf.byteOffset,buf.byteLength):new Uint8Array(buf);
+  if(ingestPcmCarry && ingestPcmCarry.length){ const merged=new Uint8Array(ingestPcmCarry.length+bytes.length); merged.set(ingestPcmCarry); merged.set(bytes,ingestPcmCarry.length); bytes=merged; }
+  const frames=bytes.length>>2, used=frames*4;
+  ingestPcmCarry = used<bytes.length ? bytes.slice(used) : null;   // carry any partial frame into the next chunk
+  if(!frames) return;
+  const view=new DataView(bytes.buffer,bytes.byteOffset,used);
+  const abuf=ingestActx.createBuffer(2,frames,48000);
+  const L=abuf.getChannelData(0), R=abuf.getChannelData(1);
+  for(let i=0;i<frames;i++){ L[i]=view.getInt16(i*4,true)/32768; R[i]=view.getInt16(i*4+2,true)/32768; }
+  const src=ingestActx.createBufferSource(); src.buffer=abuf; src.connect(ingestActx.destination);
+  const startAt=Math.max(ingestActx.currentTime+0.08, ingestNextPlayAt);
+  src.start(startAt); ingestNextPlayAt=startAt+abuf.duration;
+  src.onended=()=>{ ingestPlaySources=ingestPlaySources.filter(s=>s!==src); };
+  ingestPlaySources.push(src);
+}
+
+// ---- config persistence (SRT URLs only — court assignment is re-picked on restart, same as regions) ----
+let ingestSaveTimer=null;
+function saveIngestConfig(){
+  clearTimeout(ingestSaveTimer);
+  ingestSaveTimer=setTimeout(()=>{
+    if(!window.configStore) return;
+    const courts=ingestCourts.map(ic=>({url:ic.urlInput.value.trim()}));
+    window.configStore.set({ingestGrid:{courts}});
+  },400);
+}
+
+if(window.ingestAPI){
+  window.ingestAPI.probe().then(p=>{ const el=document.getElementById('ingest-ff');
+    if(!p.ok){ el.textContent='⚠ '+p.error; el.style.color='var(--warn)'; }
+    else { el.textContent='ffmpeg ok · SRT '+(p.srt?'✓':'✗')+' · RTSP '+(p.rtsp?'✓':'✗'); el.style.color=p.srt?'var(--accent)':'#c58a1a'; } });
+  window.ingestAPI.onFrame(d=>{ const ic=ingestCourts.find(x=>x.feedKey===d.courtId); if(ic) ic.onFrame(d); });
+  window.ingestAPI.onAudio(d=>{ const ic=ingestCourts.find(x=>x.feedKey===d.courtId); if(ic) onIngestAudio(ic,d); });
+  window.ingestAPI.onStatus(d=>{ const ic=ingestCourts.find(x=>x.feedKey===d.courtId); if(ic && d.state==='NO FRAMES') setIngestState(ic,'NO FRAMES',true); });
+  window.ingestAPI.onPCM(d=>onIngestPCM(d.courtId,d.buf));
+  document.getElementById('add-ingest').onclick=()=>{ addIngestCourt(); saveIngestConfig(); };
+  (async()=>{
+    if(!window.configStore) return;
+    const cfg=await window.configStore.get();
+    const courts=(cfg.ingestGrid && cfg.ingestGrid.courts)||[];
+    courts.forEach(addIngestCourt);
+  })();
+} else {
+  document.getElementById('ingest-ff').textContent='desktop app only';
+  document.getElementById('add-ingest').disabled=true;
 }
 
 // ---- Google Sheets: one row per finished match ----

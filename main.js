@@ -70,7 +70,7 @@ ipcMain.handle('ingest-play-start', (e, { courtId }) => {
   return { ok: true, sampleRate: ingest.PCM_RATE };
 });
 ipcMain.handle('ingest-play-stop', (e, { courtId }) => { const f = feeds.get(courtId); if (f) f.stopPlayback(); return { ok: true }; });
-// stop and drop any feeds a since-closed ingest window (single-stream beta or multi-court grid) left running
+// stop and drop any feeds a since-closed ingest window (the single-stream beta popup) left running
 function stopFeedsOwnedBy(webContentsId) {
   for (const [id, f] of feeds) { if (f.ownerId === webContentsId) { f.stop(); feeds.delete(id); } }
 }
@@ -78,14 +78,6 @@ ipcMain.handle('open-ingest-test', () => {
   const w = new BrowserWindow({ width: 1000, height: 780, backgroundColor: '#0b0e12', autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: false, nodeIntegration: false, backgroundThrottling: false } });
   w.setMenuBarVisibility(false); w.loadFile('ingest-test.html');
-  const ownerId = w.webContents.id;
-  w.on('closed', () => stopFeedsOwnedBy(ownerId));
-  return { ok: true };
-});
-ipcMain.handle('open-ingest-grid', () => {
-  const w = new BrowserWindow({ width: 1440, height: 900, backgroundColor: '#0b0e12', autoHideMenuBar: true,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: false, nodeIntegration: false, backgroundThrottling: false } });
-  w.setMenuBarVisibility(false); w.loadFile('ingest-grid.html');
   const ownerId = w.webContents.id;
   w.on('closed', () => stopFeedsOwnedBy(ownerId));
   return { ok: true };

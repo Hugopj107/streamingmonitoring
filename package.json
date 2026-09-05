@@ -19,7 +19,7 @@
   "build": {
     "appId": "com.bolt6.streamsentinel",
     "productName": "Stream Sentinel",
-    "files": ["main.js", "preload.js", "index.html", "nats-ingest.js", "sheets.js", "opencv.js", "ingest.js", "ingest-test.html", "ingest-grid.html", "qc.js", "assets/**/*", "node_modules/**/*"],
+    "files": ["main.js", "preload.js", "index.html", "nats-ingest.js", "sheets.js", "opencv.js", "ingest.js", "ingest-test.html", "qc.js", "assets/**/*", "node_modules/**/*"],
     "extraResources": ["service-account.json"],
     "win": {
       "target": "portable"
