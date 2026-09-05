@@ -126,6 +126,7 @@
     <button id="export-finals">Export last match ▾</button>
     <button id="fullscreen">⛶ Fullscreen</button>
     <button id="ingest-beta" title="Try direct SRT/RTSP ingest (no screen-share)">Direct ingest (single-stream test)</button>
+    <button id="jump-tuning" title="Jump to the detection tuning sliders (threshold, sensitivity, freeze timeout…)">⚙ Tuning</button>
     <span class="chip" id="cap-status"></span>
     <span class="chip"><span id="fps">0</span> fps</span>
   </div>
@@ -170,7 +171,7 @@
     <div class="igrid" id="ingest-grid"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="tuning-card">
     <h2>Tuning (applies to every region and ingest court)</h2>
     <div class="grid">
       <div class="ctl">
@@ -348,9 +349,15 @@ function reset(r){ r.on=false; r.reason=null; r.badSince=null; r.goodSince=null;
 // check than the flicker heuristic below (which exists only because screen-capture has no
 // frame-identity signal of its own) — treated as an OR against the heuristic, never a downgrade.
 function evaluateRegion(r, frac, moving, luma, dt, now, captureStalled, havePrev, trueFrozenMs){
-  // smooth the raw signals so a single jittery frame can't cross a threshold
+  // smooth the raw signals so a single jittery frame can't cross a threshold. movA only —
+  // analyse() returns moving=1 as a "no previous frame to diff against yet" placeholder on
+  // the very first call; if that fabricated 100%-flicker value seeds movA, it inflates
+  // baseFlick to ~1 below, and since real footage rarely re-exceeds double that inflated
+  // baseline, the self-correction never fires again — the freeze threshold stays permanently
+  // far too loose. Clean footage (a direct SRT feed, no desktop-capture noise) hits this far
+  // more easily than screen-capture, but both are vulnerable, so gate on havePrev for both.
   r.fracA = r.fracA==null? frac : r.fracA+SMOOTH*(frac-r.fracA);
-  r.movA  = r.movA==null ? moving : r.movA +SMOOTH*(moving-r.movA);
+  if(havePrev) r.movA = r.movA==null ? moving : r.movA+SMOOTH*(moving-r.movA);
   // frozen: almost nothing flickering, sustained
   // freeze is judged RELATIVE to each feed's own normal flicker (auto-calibrating),
   // so a naturally clean camera isn't mistaken for frozen during a lull
@@ -359,7 +366,7 @@ function evaluateRegion(r, frac, moving, luma, dt, now, captureStalled, havePrev
   // ...but NOT while the whole capture has stalled (all regions still at once = pipeline, not a real freeze)
   if(havePrev && r.movA<freezeThr && !captureStalled) r.stillMs=(r.stillMs||0)+dt; else r.stillMs=0;
   // learn the baseline only when clearly live (well above the freeze line) and not alerting
-  if(!r.on && r.movA>freezeThr*2) r.baseFlick = r.baseFlick==null? r.movA : r.baseFlick+0.01*(r.movA-r.baseFlick);
+  if(havePrev && !r.on && r.movA>freezeThr*2) r.baseFlick = r.baseFlick==null? r.movA : r.baseFlick+0.01*(r.movA-r.baseFlick);
   // what the region wants to be, right now (priority order)
   let raw=null;
   if(luma<BLACK_LUMA)                                                                    raw='NO SIGNAL';
@@ -395,7 +402,7 @@ function step(){
       if(r.dragging){ reset(r); flag(r,false,'—'); continue; }
       const {frac,moving,luma}=analyse(r,grayBuf,prevGray);
       evaluateRegion(r, frac, moving, luma, dt, now, captureStalled, havePrev);
-      if(luma>=BLACK_LUMA){ activeCnt++; if(r.movA<0.0008) zeroFlick++; }
+      if(luma>=BLACK_LUMA){ activeCnt++; if(havePrev && r.movA<0.0008) zeroFlick++; }
       flag(r, r.on, r.on ? r.reason : Math.round((r.fracA||0)*100)+'% · f'+((r.movA||0)*100).toFixed(1));
     }
     if(!prevGray) prevGray=new Float32Array(PW*PH);
@@ -590,6 +597,7 @@ async function downloadReport(){
   dl('stream-uptime.html',html,'text/html'); dl('stream-uptime.csv',csv,'text/csv');
 }
 document.getElementById('report').onclick=downloadReport;
+document.getElementById('jump-tuning').onclick=()=>document.getElementById('tuning-card').scrollIntoView({behavior:'smooth',block:'start'});
 { const ib=document.getElementById('ingest-beta');
   if(window.ingestAPI) ib.onclick=()=>window.ingestAPI.openTest();
   else { ib.disabled=true; ib.title='desktop app only'; } }
