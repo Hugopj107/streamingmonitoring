@@ -39,6 +39,9 @@ window.ingestAPI = {
   onFrame: cb => ipcRenderer.on('ingest-frame', (e, d) => cb(d)),
   onAudio: cb => ipcRenderer.on('ingest-audio', (e, d) => cb(d)),
   onStatus: cb => ipcRenderer.on('ingest-status', (e, d) => cb(d)),
+  playStart: courtId => ipcRenderer.invoke('ingest-play-start', { courtId }),
+  playStop: courtId => ipcRenderer.invoke('ingest-play-stop', { courtId }),
+  onPCM: cb => ipcRenderer.on('ingest-pcm', (e, d) => cb(d)),
 };
 
 // The tool calls navigator.mediaDevices.getDisplayMedia(). In a browser that pops the OS

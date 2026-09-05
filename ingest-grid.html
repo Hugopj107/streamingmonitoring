@@ -37,10 +37,11 @@
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
   canvas{width:100%;height:100%;display:block;object-fit:contain;background:#000}
   .stage .placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:11px;text-align:center;padding:10px}
-  .hud{position:absolute;left:8px;top:8px;background:rgba(6,9,12,.8);border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-size:10px}
-  .hud .big{font-size:15px;font-weight:600}
-  .st{margin-top:3px;padding:2px 6px;border-radius:4px;display:inline-block;font-size:9px;letter-spacing:.08em}
+  .tile-status{display:flex;align-items:center;gap:10px;font-size:10px}
+  .tile-status .big{font-size:14px;font-weight:600}
+  .st{padding:2px 6px;border-radius:4px;display:inline-block;font-size:9px;letter-spacing:.08em;cursor:default}
   .st.ok{background:rgba(78,201,176,.14);color:var(--accent)} .st.bad{background:rgba(255,43,61,.18);color:var(--warn)}
+  .listen.on{border-color:var(--accent);color:var(--accent)}
   .badges{display:flex;gap:6px;flex-wrap:wrap;font-size:10px}
   .badge{padding:2px 7px;border-radius:4px;font-weight:700}
   .pass{color:#04110d;background:var(--accent)} .check{color:#04110d;background:var(--check)} .fail{color:#fff;background:var(--warn)} .na{color:var(--dim);background:#20272f}
@@ -72,6 +73,52 @@
 const PW=192, PH=108;   // detection resolution (matches ingest-test.html)
 let lastRoster = [];
 const cards = new Map();   // feedKey -> card
+
+const STATE_DETAIL = {
+  FROZEN: "Picture hasn't changed for 1.5s+ — the source may have stalled, dropped, or be holding a frame.",
+  CHANGE: 'Picture differs from the reference by 45%+ of the frame — usually a camera cut, source switch, or a graphic/overlay change. Confirm this is still the intended camera.',
+  'NO SIGNAL': 'Frame is near-black — check camera power, lens cap, or output routing.',
+  'NO FRAMES': "ffmpeg hasn't delivered a new frame in 4s+ — check the network link to the encoder.",
+  'CONNECTING…': 'Connecting to the stream…',
+};
+
+// ---------- audible playback (opt-in, one court at a time — separate ffmpeg PCM stream per court) ----------
+let actx=null, nextPlayAt=0, playSources=[], listeningKey=null, pcmCarry=null;
+function stopListening(){
+  if(!listeningKey) return;
+  const prev = cards.get(listeningKey);
+  if(prev){ prev.listenBtn.textContent='🔈'; prev.listenBtn.classList.remove('on'); }
+  playSources.forEach(s=>{ try{s.stop();}catch(e){} });
+  playSources=[]; pcmCarry=null;
+  window.ingestAPI.playStop(listeningKey);
+  listeningKey=null;
+}
+function startListening(card){
+  stopListening();
+  if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)();
+  actx.resume();
+  listeningKey=card.feedKey; nextPlayAt=0; pcmCarry=null;
+  window.ingestAPI.playStart(card.feedKey);
+  card.listenBtn.textContent='🔊'; card.listenBtn.classList.add('on');
+}
+function onPCM(feedKey, buf){
+  if(feedKey!==listeningKey || !actx) return;
+  let bytes = buf.buffer ? new Uint8Array(buf.buffer,buf.byteOffset,buf.byteLength) : new Uint8Array(buf);
+  if(pcmCarry && pcmCarry.length){ const merged=new Uint8Array(pcmCarry.length+bytes.length); merged.set(pcmCarry); merged.set(bytes,pcmCarry.length); bytes=merged; }
+  const frames = bytes.length >> 2;
+  const used = frames*4;
+  pcmCarry = used<bytes.length ? bytes.slice(used) : null;   // carry any partial frame into the next chunk
+  if(!frames) return;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, used);
+  const abuf = actx.createBuffer(2, frames, 48000);
+  const L=abuf.getChannelData(0), R=abuf.getChannelData(1);
+  for(let i=0;i<frames;i++){ L[i]=view.getInt16(i*4,true)/32768; R[i]=view.getInt16(i*4+2,true)/32768; }
+  const src=actx.createBufferSource(); src.buffer=abuf; src.connect(actx.destination);
+  const startAt=Math.max(actx.currentTime+0.08, nextPlayAt);
+  src.start(startAt); nextPlayAt=startAt+abuf.duration;
+  src.onended=()=>{ playSources=playSources.filter(s=>s!==src); };
+  playSources.push(src);
+}
 
 // ---------- NATS reference (labels only — SRT URLs are entered by hand) ----------
 function deriveTName(u){ try{ const host=String(u).replace(/^nats:\/\//,'').split(':')[0].split('.')[0];
@@ -145,17 +192,17 @@ function addCard(initial){
       <input class="url" placeholder="srt://host:port?passphrase=…  or  rtsp://…" autocomplete="off">
       <button class="start">Start</button>
       <button class="stop" disabled>Stop</button>
+      <button class="listen" disabled title="Play this court's audio out loud (only one court at a time)">🔈</button>
       <button class="rm">×</button>
     </div>
     <div class="card-label"></div>
     <div class="stage">
       <canvas width="384" height="216"></canvas>
       <div class="placeholder">not started</div>
-      <div class="hud">
-        <div class="chip">CHANGED</div>
-        <div class="big"><span class="pct">0</span>%</div>
-        <div class="st ok state">WAITING</div>
-      </div>
+    </div>
+    <div class="tile-status">
+      <span class="chip">Δ</span><span class="big"><span class="pct">0</span>%</span>
+      <span class="st ok state" title="">WAITING</span>
     </div>
     <div class="badges">
       <span class="badge na exp-badge">EXP —</span>
@@ -174,6 +221,7 @@ function addCard(initial){
     feedKey, el,
     courtIdInput: el.querySelector('.cid'), urlInput: el.querySelector('.url'),
     startBtn: el.querySelector('.start'), stopBtn: el.querySelector('.stop'), rmBtn: el.querySelector('.rm'),
+    listenBtn: el.querySelector('.listen'),
     labelEl: el.querySelector('.card-label'), placeholderEl: el.querySelector('.placeholder'),
     stageEl: el.querySelector('.stage'), stateEl: el.querySelector('.state'), pctEl: el.querySelector('.pct'),
     expBadge: el.querySelector('.exp-badge'), wbBadge: el.querySelector('.wb-badge'), audBadge: el.querySelector('.aud-badge'),
@@ -193,6 +241,7 @@ function addCard(initial){
   updateCardLabel(card);
 
   const setState = (txt,bad) => { card.stateEl.textContent=txt; card.stateEl.className='st '+(bad?'bad':'ok');
+    card.stateEl.title = STATE_DETAIL[txt] || '';
     card.stageEl.classList.toggle('alert', !!bad); };
 
   card.startBtn.onclick = () => {
@@ -202,18 +251,23 @@ function addCard(initial){
     card.placeholderEl.style.display='none'; setState('CONNECTING…', false);
     window.ingestAPI.start(feedKey, u);
     card.running=true; card.startBtn.disabled=true; card.stopBtn.disabled=false;
+    card.listenBtn.disabled=false;
     card.courtIdInput.disabled=true; card.urlInput.disabled=true;
     saveConfig();
   };
   card.stopBtn.onclick = () => {
     window.ingestAPI.stop(feedKey);
+    if(listeningKey===feedKey) stopListening();
     card.running=false; card.startBtn.disabled=false; card.stopBtn.disabled=true;
+    card.listenBtn.disabled=true;
     card.courtIdInput.disabled=false; card.urlInput.disabled=false;
     card.placeholderEl.textContent='not started'; card.placeholderEl.style.display='flex';
     setState('STOPPED', false);
   };
+  card.listenBtn.onclick = () => { listeningKey===feedKey ? stopListening() : startListening(card); };
   card.rmBtn.onclick = () => {
     if(card.running) window.ingestAPI.stop(feedKey);
+    if(listeningKey===feedKey) stopListening();
     cards.delete(feedKey); el.remove(); saveConfig();
   };
   card.courtIdInput.oninput = () => { updateCardLabel(card); saveConfig(); };
@@ -303,6 +357,7 @@ if(window.ingestAPI){
   window.ingestAPI.onFrame(d => { const c=cards.get(d.courtId); if(c) c.drawFrame(d); });
   window.ingestAPI.onAudio(d => { const c=cards.get(d.courtId); if(c) c.onAudio(d); });
   window.ingestAPI.onStatus(d => { const c=cards.get(d.courtId); if(c) c.onStatus(d); });
+  window.ingestAPI.onPCM(d => onPCM(d.courtId, d.buf));
 }
 
 document.getElementById('add-card').onclick = () => { addCard(); saveConfig(); };

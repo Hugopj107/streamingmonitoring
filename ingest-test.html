@@ -20,13 +20,18 @@
   canvas{width:100%;height:100%;display:block;object-fit:contain;background:#000}
   #grid-ovl{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;display:none;z-index:4}
   #grid-ovl.on{display:block}
-  .hud{position:absolute;left:10px;top:10px;background:rgba(6,9,12,.8);border:1px solid var(--line);border-radius:6px;padding:8px 11px;font-size:11px;min-width:150px}
-  .hud .big{font-size:20px;font-weight:600}
-  .hud .st{margin-top:4px;padding:2px 7px;border-radius:4px;display:inline-block;font-size:10px;letter-spacing:.1em}
+  .hud{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:11px;max-width:860px}
+  .hud-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .hud-row+.hud-row{margin-top:8px}
+  .hud .big{font-size:18px;font-weight:600}
+  .st{padding:2px 7px;border-radius:4px;display:inline-block;font-size:10px;letter-spacing:.1em}
   .st.ok{background:rgba(78,201,176,.14);color:var(--accent)} .st.bad{background:rgba(255,43,61,.18);color:var(--warn)}
-  .vu{width:180px;height:12px;background:#0a0d11;border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-top:8px}
+  .state-detail{color:var(--dim);font-size:11px;line-height:1.4;margin-top:6px}
+  .state-detail:empty{display:none}
+  .vu{width:140px;height:12px;background:#0a0d11;border:1px solid var(--line);border-radius:4px;overflow:hidden}
   .vu-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent) 0%,var(--accent) 70%,#c58a1a 85%,var(--warn) 100%)}
   .viewbtn.on{border-color:var(--accent);color:var(--accent)}
+  #play-audio.on{border-color:var(--accent);color:var(--accent)}
   .qc{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:280px}
   .qc-head{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
   .qc-verdict{font-size:14px;font-weight:700;letter-spacing:.06em}
@@ -48,6 +53,7 @@
   <input id="url" placeholder="srt://host:port?passphrase=…  or  rtsp://…" autocomplete="off">
   <button id="go">Start</button>
   <button id="stop">Stop</button>
+  <button id="play-audio" title="Play this stream's audio out loud">🔈 Play audio</button>
   <span class="chip" id="ff"></span>
 </div>
 <div class="bar">
@@ -63,18 +69,26 @@
 </div>
 
 <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+<div style="display:flex;flex-direction:column;gap:10px;max-width:860px;flex:1;min-width:340px">
 <div class="stage" id="stage">
   <canvas id="cv" width="384" height="216"></canvas>
   <img id="grid-ovl" src="assets/tdi_alignment_grid.png" alt="">
-  <div class="hud">
-    <div class="chip">CHANGED BLOCKS</div>
-    <div class="big"><span id="pct">0</span>%</div>
-    <div class="chip" id="fps">0 fps</div>
-    <div class="st ok" id="state">WAITING</div>
-    <div class="chip" style="margin-top:8px">AUDIO <span id="db">— dB</span> <span class="qc-badge" id="aud-badge">—</span></div>
-    <div class="vu"><div class="vu-fill" id="vu"></div></div>
-    <div class="chip" id="aud-detail" style="margin-top:4px"></div>
+</div>
+<div class="hud">
+  <div class="hud-row">
+    <span class="chip">CHANGED BLOCKS</span>
+    <span class="big"><span id="pct">0</span>%</span>
+    <span class="chip" id="fps">0 fps</span>
+    <span class="st ok" id="state">WAITING</span>
   </div>
+  <div class="hud-row">
+    <span class="chip">AUDIO <span id="db">— dB</span></span>
+    <span class="qc-badge" id="aud-badge">—</span>
+    <div class="vu"><div class="vu-fill" id="vu"></div></div>
+    <span class="chip" id="aud-detail"></span>
+  </div>
+  <div class="state-detail" id="state-detail"></div>
+</div>
 </div>
 
 <div class="qc" id="qc">
@@ -101,6 +115,14 @@ let lastFrameT=0, frames=0, fpsAvg=0, lastTick=performance.now();
 let view='normal', lastQCAt=0, lastRGBA=null;
 const qcStab = window.QCStabilizer ? new window.QCStabilizer() : null;
 
+const STATE_DETAIL = {
+  FROZEN: "Picture hasn't changed for 1.5s+ — the source may have stalled, dropped, or be holding a frame.",
+  CHANGE: 'Picture differs from the reference by 45%+ of the frame — usually a camera cut, source switch, or a graphic/overlay change. Confirm this is still the intended camera.',
+  'NO SIGNAL': 'Frame is near-black — check camera power, lens cap, or output routing.',
+  'NO FRAMES': "ffmpeg hasn't delivered a new frame in 4s+ — check the network link to the encoder.",
+  'CONNECTING…': 'Connecting to the stream…',
+};
+
 // view toggles
 function setView(v){ view=v; ['normal','false','rgb'].forEach(k=>document.getElementById('v-'+k).classList.toggle('on',k===v)); if(lastRGBA) renderView(); }
 document.getElementById('v-normal').onclick=()=>setView('normal');
@@ -116,11 +138,51 @@ if(window.ingestAPI){
   window.ingestAPI.onFrame(d=>drawFrame(d));
   window.ingestAPI.onAudio(d=>onAudio(d));
   window.ingestAPI.onStatus(d=>{ if(d.state==='NO FRAMES') setState('NO FRAMES',true); });
+  window.ingestAPI.onPCM(d=>onPCM(d.buf));
   document.getElementById('go').onclick=()=>{ const u=document.getElementById('url').value.trim(); if(!u)return;
     ref=null;prevGray=null;stillMs=0;fracA=movA=baseFlick=null; setState('CONNECTING…',false);
     window.ingestAPI.start('1',u); };
-  document.getElementById('stop').onclick=()=>{ window.ingestAPI.stop('1'); setState('STOPPED',false); };
-} else { document.getElementById('ff').textContent='desktop app only'; }
+  document.getElementById('stop').onclick=()=>{ window.ingestAPI.stop('1'); setState('STOPPED',false); stopAudioPlayback(); };
+  document.getElementById('play-audio').onclick=togglePlayback;
+} else { document.getElementById('ff').textContent='desktop app only'; document.getElementById('play-audio').disabled=true; }
+
+// ---------- audible playback (opt-in — separate ffmpeg PCM stream, scheduled via Web Audio) ----------
+let actx=null, nextPlayAt=0, playing=false, playSources=[], pcmCarry=null;
+function togglePlayback(){
+  const btn=document.getElementById('play-audio');
+  if(playing){ stopAudioPlayback(); return; }
+  if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)();
+  actx.resume();
+  playing=true; nextPlayAt=0; playSources=[]; pcmCarry=null;
+  window.ingestAPI.playStart('1');
+  btn.textContent='🔊 Mute'; btn.classList.add('on');
+}
+function stopAudioPlayback(){
+  const btn=document.getElementById('play-audio');
+  playing=false; pcmCarry=null;
+  playSources.forEach(s=>{ try{s.stop();}catch(e){} });
+  playSources=[];
+  window.ingestAPI.playStop('1');
+  btn.textContent='🔈 Play audio'; btn.classList.remove('on');
+}
+function onPCM(buf){
+  if(!playing || !actx) return;
+  let bytes = buf.buffer ? new Uint8Array(buf.buffer,buf.byteOffset,buf.byteLength) : new Uint8Array(buf);
+  if(pcmCarry && pcmCarry.length){ const merged=new Uint8Array(pcmCarry.length+bytes.length); merged.set(pcmCarry); merged.set(bytes,pcmCarry.length); bytes=merged; }
+  const frames = bytes.length >> 2;                     // 2ch * 16-bit
+  const used = frames*4;
+  pcmCarry = used<bytes.length ? bytes.slice(used) : null;   // carry any partial frame into the next chunk
+  if(!frames) return;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, used);
+  const abuf = actx.createBuffer(2, frames, 48000);
+  const L=abuf.getChannelData(0), R=abuf.getChannelData(1);
+  for(let i=0;i<frames;i++){ L[i]=view.getInt16(i*4,true)/32768; R[i]=view.getInt16(i*4+2,true)/32768; }
+  const src=actx.createBufferSource(); src.buffer=abuf; src.connect(actx.destination);
+  const startAt=Math.max(actx.currentTime+0.08, nextPlayAt);
+  src.start(startAt); nextPlayAt=startAt+abuf.duration;
+  src.onended=()=>{ playSources=playSources.filter(s=>s!==src); };
+  playSources.push(src);
+}
 
 function drawFrame({w,h,buf,frozenMs}){
   lastRGBA={ arr:new Uint8ClampedArray(buf.buffer||buf), w, h };
@@ -203,7 +265,8 @@ function analyse(data, frozenMs){
   setState(on?reason:'LIVE', on);
 }
 function setState(txt,bad){ const s=document.getElementById('state'); s.textContent=txt; s.className='st '+(bad?'bad':'ok');
-  document.getElementById('stage').classList.toggle('alert',!!bad); }
+  document.getElementById('stage').classList.toggle('alert',!!bad);
+  document.getElementById('state-detail').textContent = STATE_DETAIL[txt] || ''; }
 
 let silenceMs=0, lastAudioT=0;
 function onAudio(a){
@@ -231,7 +294,7 @@ let cvEmpty=null; const emptyMask=()=>{ if(!cvEmpty) cvEmpty=new CV.Mat(); retur
 const makeORB=()=>{ try{return new CV.ORB(800);}catch(e){try{return CV.ORB_create(800);}catch(_){return new CV.ORB();}} };
 function loadCV(){ if(cvState==='ready'||cvState==='loading')return; cvState='loading';
   const s=document.createElement('script'); s.async=true; s.src=window.ingestAPI?'opencv.js':'https://docs.opencv.org/4.10.0/opencv.js';
-  s.onload=async()=>{ try{ let m=window.CV; if(m&&typeof m.then==='function')m=await m;
+  s.onload=async()=>{ try{ let m=window.cv; if(m&&typeof m.then==='function')m=await m;
     if(m&&m.getBuildInformation){CV=m;cvState='ready';} else if(m){m.onRuntimeInitialized=()=>{CV=m;cvState='ready';};} else cvState='failed'; }catch(e){cvState='failed';} };
   s.onerror=()=>{cvState='failed';}; document.head.appendChild(s); }
 function grayMat(){ if(!CV||!lastRGBA) return null;

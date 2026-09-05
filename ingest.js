@@ -7,6 +7,7 @@ const { spawn, execFile } = require('child_process');
 const FRAME_W = 384;          // downscaled width for detection (cheap, plenty for block/flicker)
 const FRAME_H = 216;          // fixed 16:9 output → deterministic frame size (stretch is fine for detection)
 const FPS = 8;                // detection framerate — freeze/change don't need more
+const PCM_RATE = 48000;       // playback sample rate (raw s16le stereo)
 let FFMPEG = 'ffmpeg';        // overridden by setFfmpegPath()
 
 function setFfmpegPath(p){ if(p) FFMPEG = p; }
@@ -119,12 +120,32 @@ class Feed {
     }
   }
 
+  // ---- audible playback (separate ffmpeg, opt-in — the astats process above never carries audio through) ----
+  startPlayback(onPCM){
+    this.onPCM = onPCM; this._playWanted = true;
+    this._startPlayback();
+  }
+  stopPlayback(){
+    this._playWanted = false;
+    try{ this.pproc && this.pproc.kill('SIGKILL'); }catch(e){}
+    this.pproc = null;
+  }
+  _startPlayback(){
+    if(!this.alive || !this._playWanted || this.pproc) return;
+    const args = ['-hide_banner','-loglevel','error', ...inputArgs(this.url),
+      '-vn','-af','aresample=async=1','-f','s16le','-ar',String(PCM_RATE),'-ac','2','pipe:1'];
+    const p = spawn(FFMPEG, args); this.pproc = p;
+    p.stdout.on('data', d => { if(this.onPCM) this.onPCM(d); });
+    p.on('close', () => { this.pproc = null; if(this.alive && this._playWanted) setTimeout(()=>this._startPlayback(), 800); });
+  }
+
   stop(){
     this.alive = false;
     clearInterval(this._watch);
     try{ this.vproc && this.vproc.kill('SIGKILL'); }catch(e){}
     try{ this.aproc && this.aproc.kill('SIGKILL'); }catch(e){}
+    this.stopPlayback();
   }
 }
 
-module.exports = { setFfmpegPath, probe, Feed, FRAME_W, FPS };
+module.exports = { setFfmpegPath, probe, Feed, FRAME_W, FPS, PCM_RATE };

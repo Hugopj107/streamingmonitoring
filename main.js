@@ -63,6 +63,13 @@ ipcMain.handle('ingest-start', (e, { courtId, url }) => {
   return { ok: true };
 });
 ipcMain.handle('ingest-stop', (e, { courtId }) => { const f = feeds.get(courtId); if (f) { f.stop(); feeds.delete(courtId); } return { ok: true }; });
+ipcMain.handle('ingest-play-start', (e, { courtId }) => {
+  const f = feeds.get(courtId); if (!f) return { ok: false, error: 'not running' };
+  const wc = e.sender;
+  f.startPlayback(d => { try { wc.send('ingest-pcm', { courtId, buf: d }); } catch (_) {} });
+  return { ok: true, sampleRate: ingest.PCM_RATE };
+});
+ipcMain.handle('ingest-play-stop', (e, { courtId }) => { const f = feeds.get(courtId); if (f) f.stopPlayback(); return { ok: true }; });
 // stop and drop any feeds a since-closed ingest window (single-stream beta or multi-court grid) left running
 function stopFeedsOwnedBy(webContentsId) {
   for (const [id, f] of feeds) { if (f.ownerId === webContentsId) { f.stop(); feeds.delete(id); } }
