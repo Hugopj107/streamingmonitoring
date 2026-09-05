@@ -1,0 +1,892 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stream Change Sentinel — multi-region</title>
+<style>
+  :root{
+    --bg:#0b0e12; --panel:#12161c; --line:#20272f; --ink:#dfe6ee; --dim:#7d8a99;
+    --accent:#4ec9b0; --warn:#ff2b3d;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:13px;line-height:1.4}
+  .wrap{max-width:1180px;margin:0 auto;padding:18px}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+  h1{font-size:15px;letter-spacing:.14em;text-transform:uppercase;margin:0;font-weight:600}
+  h1 .dot{color:var(--warn)}
+  header .sub{color:var(--dim);font-size:11px;letter-spacing:.05em}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+  button,label.file{background:var(--panel);border:1px solid var(--line);color:var(--ink);
+    padding:8px 13px;border-radius:6px;cursor:pointer;font-family:var(--mono);font-size:12px;letter-spacing:.03em}
+  button:hover,label.file:hover{border-color:var(--accent)}
+  input[type=file]{display:none}
+  .chip{margin-left:auto;color:var(--dim);font-size:11px}
+  #cap-status{margin-left:0;color:var(--warn)}
+  #cap-status:empty{display:none}
+  .stage:fullscreen{width:100vw;height:100vh;border-radius:0;border:none;aspect-ratio:auto}
+  .stage:fullscreen video{object-fit:contain}
+  #natsbar{margin-top:-6px}
+  #natsbar .chip{margin-left:0}
+  #sheetbar{margin-top:-6px} #sheetbar .chip{margin-left:0}
+  #sheet-status.on{color:var(--accent)} #sheet-status.err{color:var(--warn)}
+  #nats-url{flex:1;min-width:120px;background:#0b0e12;border:1px solid var(--line);color:var(--ink);
+    padding:8px 12px;border-radius:6px;font-family:var(--mono);font-size:12px}
+  #nats-url:focus{outline:none;border-color:var(--accent)}
+  #avbar{margin-top:-6px} #avbar .chip{margin-left:0}
+  #vu{width:160px;height:12px;background:#0a0d11;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+  #vu-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent) 0%,var(--accent) 70%,#c58a1a 85%,var(--warn) 100%);transition:width .05s}
+  #audio-status.ok{color:var(--accent)} #audio-status.warn{color:var(--warn)}
+  #stage-overlay{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none;display:none;opacity:.55;z-index:5}
+  .roi .grid{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;display:none}
+  .roi.showgrid .grid{display:block}
+  .roi .grid line{stroke:var(--warn);stroke-width:1;vector-effect:non-scaling-stroke}
+  .roi .lock{position:absolute;left:2px;bottom:2px;background:rgba(6,9,12,.82);color:var(--ink);
+    border:1px solid var(--line);border-radius:4px;font-family:var(--mono);font-size:10px;padding:2px 7px;cursor:pointer;z-index:6}
+  .roi .lock:hover{border-color:var(--accent)}
+  .roi .lock.locked{border-color:var(--accent);color:var(--accent)}
+  .roi .drift{position:absolute;left:2px;bottom:24px;background:rgba(6,9,12,.82);border-radius:4px;
+    font-family:var(--mono);font-size:10px;padding:1px 6px;color:var(--dim);max-width:calc(100% - 8px);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none;z-index:6}
+  .roi .drift.show{display:block}
+  .roi .drift.good{color:var(--accent)} .roi .drift.check{color:#c58a1a} .roi .drift.bad{color:var(--warn)}
+  #nats-status.on{color:var(--accent)} #nats-status.err{color:var(--warn)}
+  #roster{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+  .court{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 11px;font-size:11px;max-width:340px}
+  .court .id{color:var(--accent);font-weight:600;letter-spacing:.04em}
+  .court .pl{color:var(--ink)} .court .meta{color:var(--dim);margin-top:3px;font-size:10px}
+  .court .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:5px;vertical-align:middle}
+  .court .dot.stale{background:var(--warn)}
+  select.assign{position:absolute;right:3px;top:3px;max-width:130px;background:rgba(6,9,12,.85);color:var(--ink);
+    border:1px solid var(--line);border-radius:4px;font-family:var(--mono);font-size:10px;padding:2px 4px;cursor:pointer}
+  select.assign:hover{border-color:var(--accent)}
+
+  .stage{position:relative;background:#000;border:2px solid var(--line);border-radius:10px;overflow:hidden;
+    aspect-ratio:16/9;user-select:none;touch-action:none}
+  video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;display:block}
+  .placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    color:var(--dim);font-size:12px;text-align:center;padding:20px;letter-spacing:.05em}
+
+  .roi{position:absolute;border:2px solid var(--accent);border-radius:4px;cursor:move;
+    box-shadow:0 0 0 1px rgba(0,0,0,.55);transition:border-width .05s,border-color .05s}
+  .roi.alert{border-color:var(--warn);border-width:11px;animation:pulse .5s infinite;
+    box-shadow:inset 0 0 45px rgba(255,43,61,.6)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .roi .tag{position:absolute;left:-2px;top:-2px;background:rgba(6,9,12,.82);font-size:11px;
+    padding:3px 8px;border-radius:3px;letter-spacing:.05em;white-space:nowrap;pointer-events:none}
+  .roi .tag b{color:var(--accent)} .roi.alert .tag b{color:var(--warn)}
+  .roi .handle{position:absolute;right:-7px;bottom:-7px;width:15px;height:15px;background:var(--accent);
+    border:2px solid #0b0e12;border-radius:3px;cursor:nwse-resize}
+  .roi.alert .handle{background:var(--warn)}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:14px}
+  .card h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
+  .ctl .row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+  .ctl .val{color:var(--accent)}
+  .ctl .hint{color:var(--dim);font-size:10px;margin-top:5px;line-height:1.5}
+  input[type=range]{width:100%;accent-color:var(--accent);cursor:pointer}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Stream Change Sentinel <span class="dot">●</span></h1>
+    <span class="sub">multi-region · each box detects independently against its own last-known-good</span>
+  </header>
+
+  <div class="bar">
+    <label class="file">Load video<input id="file" type="file" accept="video/*"></label>
+    <button id="screen">Capture screen / window</button>
+    <button id="add">+ Region</button>
+    <button id="del">− Region</button>
+    <button id="reset">Reset references</button>
+    <button id="report">Day report</button>
+    <button id="export-finals">Export last match ▾</button>
+    <button id="fullscreen">⛶ Fullscreen</button>
+    <button id="ingest-beta" title="Try direct SRT/RTSP ingest (no screen-share)">Direct ingest (beta)</button>
+    <span class="chip" id="cap-status"></span>
+    <span class="chip"><span id="fps">0</span> fps</span>
+  </div>
+
+  <div class="bar" id="natsbar">
+    <input id="nats-url" placeholder="nats://…tournament-nats.tail….ts.net:4222" autocomplete="off">
+    <button id="nats-connect">Add tournament</button>
+    <span class="chip" id="nats-status">offline</span>
+    <span class="chip" style="color:var(--dim)">subject: external.smart-director</span>
+  </div>
+  <div id="nats-list"></div>
+  <div id="roster"></div>
+
+  <div class="bar" id="sheetbar">
+    <span class="chip" style="margin-left:0;color:var(--dim)">Auto-logs each match to the streams sheet</span>
+    <span class="chip" id="sheet-status">sheet off</span>
+  </div>
+
+  <div class="bar" id="avbar">
+    <span class="chip" style="margin-left:0;color:var(--dim)">Audio</span>
+    <div id="vu"><div id="vu-fill"></div></div>
+    <span class="chip" id="audio-status">no audio</span>
+    <span style="width:14px"></span>
+    <button id="ovl-toggle">Alignment overlay: off</button>
+    <label class="chip" style="color:var(--dim)">opacity <input id="ovl-op" type="range" min="10" max="100" value="55" style="vertical-align:middle;width:90px;accent-color:var(--accent)"></label>
+    <button id="ovl-img">Load overlay image…</button>
+    <button id="ovl-clear" style="display:none">Clear image</button>
+  </div>
+
+  <div class="stage" id="stage">
+    <video id="vid" muted playsinline></video>
+    <img id="stage-overlay" alt="">
+    <div class="placeholder" id="ph">Load a video or capture your monitoring window, then drag each box onto a court.</div>
+  </div>
+
+  <div class="card">
+    <h2>Tuning (applies to every region)</h2>
+    <div class="grid">
+      <div class="ctl">
+        <div class="row"><span>Trigger threshold</span><span class="val"><span id="v-trig">45</span>%</span></div>
+        <input id="s-trig" type="range" min="5" max="95" value="45">
+        <div class="hint">% of a region's blocks that must change to fire. Player ≈ 2–8%; bars/slate/black ≈ 90–100%.</div>
+      </div>
+      <div class="ctl">
+        <div class="row"><span>Block sensitivity</span><span class="val" id="v-sens">18</span></div>
+        <input id="s-sens" type="range" min="4" max="60" value="18">
+        <div class="hint">Grey-level delta for a block to count as changed. Raise if crowd/shadows nudge it.</div>
+      </div>
+      <div class="ctl">
+        <div class="row"><span>Grid density</span><span class="val"><span id="v-grid">28</span> cols</span></div>
+        <input id="s-grid" type="range" min="8" max="48" value="28">
+        <div class="hint">Blocks per region across. 20–32 is a sweet spot.</div>
+      </div>
+      <div class="ctl">
+        <div class="row"><span>Adapt speed</span><span class="val" id="v-adapt">0.04</span></div>
+        <input id="s-adapt" type="range" min="1" max="40" value="4">
+        <div class="hint">How fast each reference drifts to absorb slow lighting/sun changes.</div>
+      </div>
+      <div class="ctl">
+        <div class="row"><span>Flash hold</span><span class="val"><span id="v-hold">1.5</span>s</span></div>
+        <input id="s-hold" type="range" min="0" max="50" value="15">
+        <div class="hint">Minimum time a region's red border stays lit after firing.</div>
+      </div>
+      <div class="ctl">
+        <div class="row"><span>No-signal timeout</span><span class="val"><span id="v-freeze">2.5</span>s</span></div>
+        <input id="s-freeze" type="range" min="5" max="80" value="25">
+        <div class="hint">Flag a region FROZEN if its picture stops changing for this long, or NO SIGNAL if it goes black — catches a stalled feed holding its last frame.</div>
+      </div>
+      <div class="ctl">
+        <div class="row"><span>Freeze sensitivity</span><span class="val"><span id="v-ffrac">20</span>%</span></div>
+        <input id="s-ffrac" type="range" min="5" max="60" value="20">
+        <div class="hint">FROZEN fires when a feed's flicker drops below this fraction of its OWN normal level — it auto-calibrates per court, so a naturally clean camera and a noisy one both work. Lower = only flag a near-total freeze.</div>
+      </div>
+      <div class="ctl">
+        <div class="row"><span>Alert latch</span><span class="val"><span id="v-exit">0.6</span>s</span></div>
+        <input id="s-exit" type="range" min="1" max="30" value="6">
+        <div class="hint">A fault must stay clear this long before the border releases. Raise it if alerts still flicker on/off; lower for snappier recovery.</div>
+      </div>
+      <div class="ctl">
+        <div class="row"><span>Re-baseline CHANGE after</span><span class="val"><span id="v-rebase">8</span>s</span></div>
+        <input id="s-rebase" type="range" min="2" max="30" value="8">
+        <div class="hint">If a region stays in CHANGE this long it accepts the current picture as the new normal and clears — the safety net that stops it getting stuck (e.g. when you stop the feed). Only affects CHANGE; FROZEN / NO SIGNAL stay flagged as long as they're real.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const vid=document.getElementById('vid'), stage=document.getElementById('stage'),
+      ph=document.getElementById('ph'), fpsEl=document.getElementById('fps');
+
+// ---- tunables ----
+const P={trig:0.45, sens:18, gridCols:28, adapt:0.04, hold:1.5, freeze:2.5, exit:0.6, rebase:8, freezeRel:0.2};
+const BLACK_LUMA=16;   // black / no-signal floor (mean grey)
+const S=(id,key,fn,show)=>{const s=document.getElementById('s-'+id),o=document.getElementById('v-'+id);
+  s.oninput=()=>{P[key]=fn(+s.value); o.textContent=show(P[key]);};};
+S('trig','trig',v=>v/100,v=>Math.round(v*100));
+S('sens','sens',v=>v,v=>v);
+S('grid','gridCols',v=>v,v=>v);
+S('adapt','adapt',v=>v/100,v=>v.toFixed(2));
+S('hold','hold',v=>v/10,v=>v.toFixed(1));
+S('freeze','freeze',v=>v/10,v=>v.toFixed(1));
+S('ffrac','freezeRel',v=>v/100,v=>Math.round(v*100)+'%');
+S('exit','exit',v=>v/10,v=>v.toFixed(1));
+S('rebase','rebase',v=>v,v=>v);
+
+// ---- processing buffer ----
+const PW=320; let PH=180;
+const oc=document.createElement('canvas'); oc.width=PW; oc.height=PH;
+const octx=oc.getContext('2d',{willReadFrequently:true});
+
+// ---- regions ----
+let regions=[], nextId=1;
+function makeRegion(x,y,w,h){
+  const r={id:nextId++, x,y,w,h, ref:null, holdUntil:0, dragging:false};
+  r.court='CAM '+r.id;
+  const el=document.createElement('div'); el.className='roi';
+  el.innerHTML='<div class="tag"><span class="nm">CAM '+r.id+'</span> · <b>0%</b></div>'
+    +'<select class="assign"></select>'
+    +'<svg class="grid" viewBox="0 0 100 100" preserveAspectRatio="none">'
+    +'<line x1="33.3" y1="0" x2="33.3" y2="100"/><line x1="66.6" y1="0" x2="66.6" y2="100"/>'
+    +'<line x1="0" y1="33.3" x2="100" y2="33.3"/><line x1="0" y1="66.6" x2="100" y2="66.6"/>'
+    +'<line x1="0" y1="0" x2="100" y2="100"/><line x1="100" y1="0" x2="0" y2="100"/></svg>'
+    +'<button class="lock" title="Lock this framing as the reference">Lock line-up</button>'
+    +'<div class="drift"></div>'
+    +'<div class="handle"></div>';
+  stage.appendChild(el); r.el=el; r.tag=el.querySelector('b'); r.nm=el.querySelector('.nm'); r.sel=el.querySelector('.assign');
+  r.lockBtn=el.querySelector('.lock'); r.driftEl=el.querySelector('.drift');
+  r.lockBtn.onpointerdown=e=>e.stopPropagation();
+  r.lockBtn.onclick=()=>toggleLock(r);
+  r.sel.onpointerdown=e=>e.stopPropagation();
+  r.sel.onchange=()=>assignCourt(r, r.sel.value);
+  fillSelect(r);
+  if(typeof gridOn!=='undefined' && gridOn){ el.classList.add('showgrid'); const g=el.querySelector('.grid'); if(g)g.style.opacity=ovlOp; }
+  layout(r); attachDrag(r); regions.push(r); return r;
+}
+function layout(r){const s=r.el.style; s.left=(r.x*100)+'%'; s.top=(r.y*100)+'%';
+  s.width=(r.w*100)+'%'; s.height=(r.h*100)+'%';}
+function seed(){ regions.forEach(r=>r.el.remove()); regions=[]; nextId=1;
+  makeRegion(.02,.05,.46,.42); makeRegion(.52,.05,.46,.42); makeRegion(.27,.53,.46,.42); }
+document.getElementById('add').onclick=()=>makeRegion(.35,.35,.3,.3);
+document.getElementById('del').onclick=()=>{const r=regions.pop(); if(r){ if(r.lockRef){try{r.lockRef.kp.delete();r.lockRef.des.delete();}catch(e){}} r.el.remove(); }};
+document.getElementById('reset').onclick=()=>regions.forEach(r=>r.ref=null);
+
+// ---- drag + resize ----
+function attachDrag(r){
+  const move=(e,mode)=>{
+    e.preventDefault(); r.dragging=true; r.holdUntil=0;
+    const rect=stage.getBoundingClientRect(), sx=e.clientX, sy=e.clientY, o={...r};
+    const onMove=ev=>{
+      const dx=(ev.clientX-sx)/rect.width, dy=(ev.clientY-sy)/rect.height;
+      if(mode==='move'){ r.x=Math.min(1-r.w,Math.max(0,o.x+dx)); r.y=Math.min(1-r.h,Math.max(0,o.y+dy)); }
+      else { r.w=Math.min(1-r.x,Math.max(.05,o.w+dx)); r.h=Math.min(1-r.y,Math.max(.05,o.h+dy)); }
+      layout(r);
+    };
+    const onUp=()=>{ r.dragging=false; r.ref=null;   // re-baseline detector at new spot
+      if(r.lockRef){ try{r.lockRef.kp.delete();r.lockRef.des.delete();}catch(e){} r.lockRef=null;
+        if(r.lockBtn){r.lockBtn.classList.remove('locked');r.lockBtn.textContent='Lock line-up';} if(r.driftEl){r.driftEl.className='drift';r.driftEl.textContent='';} }
+      window.removeEventListener('pointermove',onMove); window.removeEventListener('pointerup',onUp); };
+    window.addEventListener('pointermove',onMove); window.addEventListener('pointerup',onUp);
+  };
+  r.el.addEventListener('pointerdown',e=>{ if(e.target.classList.contains('handle')||e.target.tagName==='SELECT')return; move(e,'move'); });
+  r.el.querySelector('.handle').addEventListener('pointerdown',e=>move(e,'resize'));
+}
+
+// ---- detection core (per region) — port this loop to Python/OpenCV ----
+function analyse(r,gray,prevGray){
+  const cols=P.gridCols, rows=Math.max(3,Math.round(cols*(r.h*PH)/(r.w*PW)));
+  const x0=Math.floor(r.x*PW), y0=Math.floor(r.y*PH);
+  const x1=Math.min(PW,Math.ceil((r.x+r.w)*PW)), y1=Math.min(PH,Math.ceil((r.y+r.h)*PH));
+  const W=x1-x0, H=y1-y0; if(W<cols||H<rows) return {frac:0,moving:1,luma:99};
+  const nB=cols*rows, sum=new Float32Array(nB), cnt=new Int32Array(nB);
+  let lumaSum=0, moved=0, tot=0;
+  for(let y=y0;y<y1;y++){
+    const by=Math.min(rows-1,((y-y0)*rows/H)|0);
+    for(let x=x0;x<x1;x++){
+      const idx=y*PW+x, g=gray[idx];
+      const b=by*cols+Math.min(cols-1,((x-x0)*cols/W)|0); sum[b]+=g; cnt[b]++;
+      lumaSum+=g;
+      if(prevGray){ if(Math.abs(g-prevGray[idx])>2) moved++; tot++; }   // pixel "flickered" at all
+    }
+  }
+  const luma=lumaSum/(W*H);
+  const moving = tot ? moved/tot : 1;   // fraction of pixels changing frame-to-frame; ~0 only for a truly held frame
+  const cur=new Float32Array(nB);
+  for(let b=0;b<nB;b++) cur[b]=cnt[b]?sum[b]/cnt[b]:0;
+  if(!r.ref || r.ref.length!==nB){ r.ref=cur; return {frac:0,moving,luma}; }
+  const alerting=r.on===true; let changed=0;
+  for(let b=0;b<nB;b++){ if(!cnt[b])continue; const m=cur[b];
+    if(Math.abs(m-r.ref[b])>P.sens) changed++;
+    if(!alerting) r.ref[b]+=P.adapt*(m-r.ref[b]); }
+  return {frac:changed/nB, moving, luma};
+}
+
+// ---- loop ----
+let lastT=performance.now(), fpsAvg=0, lastFrame=performance.now(), started=false;
+let grayBuf=new Float32Array(PW*PH), prevGray=null;
+let captureStalled=false, stallSince=0;
+const ENTER_MS=250;       // a fault must persist this long before the border raises (kills single-frame spikes)
+const SMOOTH=0.4;         // EMA weight on raw signals (lower = steadier)
+function flag(r,on,text){ r.el.classList.toggle('alert',on); r.tag.textContent = text; }
+function reset(r){ r.on=false; r.reason=null; r.badSince=null; r.goodSince=null; r.onSince=0;
+  r.stillMs=0; r.fracA=null; r.movA=null; r.baseFlick=null; }
+function step(){
+  if(vid.readyState>=2 && (vid.videoWidth||stream)){
+    const now=performance.now(); const dt=now-lastT; lastT=now; lastFrame=now;
+    octx.drawImage(vid,0,0,PW,PH);
+    const data=octx.getImageData(0,0,PW,PH).data;
+    for(let i=0,j=0;i<grayBuf.length;i++,j+=4) grayBuf[i]=0.299*data[j]+0.587*data[j+1]+0.114*data[j+2];
+    let zeroFlick=0, activeCnt=0;   // for capture-stall detection (whole capture goes still at once)
+    for(const r of regions){
+      if(r.dragging){ reset(r); flag(r,false,'—'); continue; }
+      const {frac,moving,luma}=analyse(r,grayBuf,prevGray);
+      // smooth the raw signals so a single jittery frame can't cross a threshold
+      r.fracA = r.fracA==null? frac : r.fracA+SMOOTH*(frac-r.fracA);
+      r.movA  = r.movA==null ? moving : r.movA +SMOOTH*(moving-r.movA);
+      if(luma>=BLACK_LUMA){ activeCnt++; if(r.movA<0.0008) zeroFlick++; }
+      // frozen: almost nothing flickering, sustained
+      // freeze is judged RELATIVE to each feed's own normal flicker (auto-calibrating),
+      // so a naturally clean camera isn't mistaken for frozen during a lull
+      const base = r.baseFlick ?? r.movA ?? 0.01;
+      const freezeThr = Math.max(0.0004, base*P.freezeRel);
+      // ...but NOT while the whole capture has stalled (all regions still at once = pipeline, not a real freeze)
+      if(prevGray && r.movA<freezeThr && !captureStalled) r.stillMs=(r.stillMs||0)+dt; else r.stillMs=0;
+      // learn the baseline only when clearly live (well above the freeze line) and not alerting
+      if(!r.on && r.movA>freezeThr*2) r.baseFlick = r.baseFlick==null? r.movA : r.baseFlick+0.01*(r.movA-r.baseFlick);
+      // what the region wants to be, right now (priority order)
+      let raw=null;
+      if(luma<BLACK_LUMA)              raw='NO SIGNAL';
+      else if(r.stillMs>P.freeze*1000) raw='FROZEN';
+      else if(r.fracA>=P.trig)         raw='CHANGE';
+      // latching state machine: raise after ENTER_MS, hold min P.hold, release after P.exit clear
+      if(raw){ r.badSince = r.badSince ?? now; r.goodSince=null; }
+      else   { r.goodSince = r.goodSince ?? now; r.badSince=null; }
+      if(!r.on && raw && now-r.badSince>=ENTER_MS){ r.on=true; r.reason=raw; r.onSince=now; }
+      else if(r.on && raw && raw!==r.reason && now-r.badSince>=ENTER_MS){ r.reason=raw; }
+      else if(r.on && !raw && r.goodSince!=null
+              && now-r.goodSince>=P.exit*1000 && now-r.onSince>=P.hold*1000){ r.on=false; r.reason=null; }
+      // safety net: a region stuck in CHANGE past the timeout accepts the current picture as
+      // the new normal and clears (ref re-inits next frame). Scoped to CHANGE so a genuinely
+      // frozen/black feed stays flagged for as long as it's actually frozen/black.
+      if(r.on && r.reason==='CHANGE' && now-r.onSince>=P.rebase*1000){ r.ref=null; reset(r); }
+      const cur = r.on ? r.reason : 'OK';
+      const mId = natsCurrentMId[r.courtKey]||'—';
+      const key = mId+'|'+cur;
+      if(key !== r.lastLog){ r.lastLog=key; logEvent(r.court, mId, cur); }
+      flag(r, r.on, r.on ? r.reason : Math.round((r.fracA||0)*100)+'% · f'+((r.movA||0)*100).toFixed(1));
+    }
+    if(!prevGray) prevGray=new Float32Array(PW*PH);
+    prevGray.set(grayBuf);
+    fpsAvg=fpsAvg?fpsAvg*0.9+(1000/dt)*0.1:1000/dt;
+    fpsEl.textContent=Math.round(fpsAvg);
+    // capture stall: 2+ active regions and ~all of them dead-still simultaneously → pipeline, not real freezes
+    const stallNow = activeCnt>=2 && zeroFlick>=Math.max(2,Math.ceil(activeCnt*0.7));
+    if(stallNow){ if(!stallSince) stallSince=now; } else stallSince=0;
+    captureStalled = stallSince && (now-stallSince)>600;   // needs to persist briefly
+    const cap=document.getElementById('cap-status');
+    if(cap) cap.textContent = captureStalled ? '⚠ capture stalled — check the source window' : '';
+    pollAudio(dt);
+  }
+}
+// watchdog: if frames stop arriving entirely, flash every region and zero the fps
+setInterval(()=>{
+  if(!started) return;
+  if(performance.now()-lastFrame>800){ fpsEl.textContent='0';
+    regions.forEach(r=>{ if(!r.dragging){ r.el.classList.add('alert'); r.tag.textContent='NO FRAMES'; } }); }
+},300);
+
+// ---- sources ----
+let stream=null;
+function fitStage(){ if(vid.videoWidth) stage.style.aspectRatio=vid.videoWidth+'/'+vid.videoHeight; }
+vid.addEventListener('loadedmetadata',fitStage);
+document.getElementById('file').onchange=e=>{const f=e.target.files[0]; if(!f)return;
+  stopStream(); vid.srcObject=null; vid.src=URL.createObjectURL(f); vid.loop=true; vid.play(); begin(); setupAudioElement();};
+document.getElementById('screen').onclick=async()=>{
+  try{ stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:{ideal:30,max:60}}, audio:true});
+    vid.src=''; vid.srcObject=stream; vid.play(); setupAudio(stream); begin();
+    stream.getVideoTracks()[0].onended=()=>{ stopLog(); stream=null; };
+  }catch(err){ alert('Screen capture unavailable here ('+err.name+').\nPop the artifact out into its own tab, or load a video file.'); }
+};
+function stopStream(){ if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;} }
+function begin(){ ph.style.display='none'; started=true; lastFrame=performance.now(); prevGray=null;
+  regions.forEach(r=>{ r.ref=null; reset(r); r.lastLog=null; }); }
+
+// ---------- uptime logging + reporting ----------
+let uptimeEvents=[]; const matchMeta={}; const natsCurrentMId={};   // courtId -> current mId
+function logEvent(court,mId,state){ const evt={t:Date.now(),court,mId:mId||'—',state}; uptimeEvents.push(evt);
+  if(window.uptimeStore) try{ window.uptimeStore.append(JSON.stringify(evt)); }catch(e){} }
+function logMeta(m){ const evt={t:m.firstSeen,meta:1,court:m.court,mId:m.mId,tId:m.tId,tName:m.tName,url:m.url,courtId:m.courtId,teamA:m.teamA,teamB:m.teamB,firstSeen:m.firstSeen};
+  if(window.uptimeStore) try{ window.uptimeStore.append(JSON.stringify(evt)); }catch(e){} }
+async function restoreEvents(){ if(!window.uptimeStore) return;
+  try{ const txt=await window.uptimeStore.readAll();
+    const all=(txt||'').split('\n').filter(Boolean).map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean);
+    uptimeEvents=all.filter(e=>!e.meta);
+    all.filter(e=>e.meta).forEach(e=>{ matchMeta[e.court+'#'+e.mId]={court:e.court,courtId:e.courtId,tId:e.tId,tName:e.tName,url:e.url,mId:e.mId,teamA:e.teamA,teamB:e.teamB,firstSeen:e.firstSeen}; });
+  }catch(e){} }
+function stopLog(){ regions.forEach(r=>{ if(r.lastLog!=='__STOP'){ logEvent(r.court,natsCurrentMId[r.courtId],'__STOP'); r.lastLog='__STOP'; } }); }
+window.addEventListener('beforeunload', stopLog);
+
+const COL={'OK':'#2e7d5b','CHANGE':'#3b6ea5','FROZEN':'#c58a1a','NO SIGNAL':'#c0392b','NO FRAMES':'#8e2b3a','__gap':'#161b22'};
+function fmtM(ms){ const m=(ms||0)/60000; return m<60? m.toFixed(1)+'m' : (m/60).toFixed(2)+'h'; }
+
+function statWindow(evs,w0,w1){
+  evs=evs.slice().sort((a,b)=>a.t-b.t);
+  let seed=null; for(const e of evs){ if(e.t<=w0) seed=e.state; else break; }
+  const seq=[]; if(seed!=null) seq.push({t:w0,state:seed});
+  for(const e of evs) if(e.t>w0&&e.t<w1) seq.push({t:e.t,state:e.state});
+  seq.push({t:w1,state:'__END'});
+  let mon=0,healthy=0,byR={},inc=0,longest=0,runSum=0,runN=0,run=0,inFault=false; const segs=[];
+  for(let i=0;i<seq.length-1;i++){ const st=seq[i].state, dur=seq[i+1].t-seq[i].t; if(dur<=0)continue;
+    const stop=st==='__STOP'||st==='__END'||st==null; segs.push({state:stop?'__gap':st,dur});
+    if(stop){ if(inFault){longest=Math.max(longest,run);runSum+=run;runN++;run=0;inFault=false;} continue; }
+    mon+=dur;
+    if(st==='OK'){ healthy+=dur; if(inFault){longest=Math.max(longest,run);runSum+=run;runN++;run=0;inFault=false;} }
+    else{ byR[st]=(byR[st]||0)+dur; if(!inFault){inc++;inFault=true;run=0;} run+=dur; }
+  }
+  if(inFault){longest=Math.max(longest,run);runSum+=run;runN++;}
+  return {winStart:w0,winEnd:w1,mon,healthy,down:mon-healthy,uptime:mon?healthy/mon:1,byR,inc,longest,mttr:runN?runSum/runN:0,segs};
+}
+
+// group state events by match (court#mId); each match window closes when the next match on
+// that court starts, so past matches stay in the report and the court total sums them.
+function rollup(events,t0,t1,meta={}){
+  const byMatch={};
+  for(const e of events){ if(e.meta)continue; if(e.t<t0)continue; const mk=e.court+'#'+(e.mId||'—'); (byMatch[mk]??=[]).push(e); }
+  const courtMatches={};
+  for(const mk of Object.keys(byMatch)){
+    const [court,mId]=mk.split('#'); const m=meta[mk];
+    const start=m?Math.max(t0,m.firstSeen):Math.min(...byMatch[mk].map(e=>e.t));
+    (courtMatches[court]??=[]).push({mk,court,mId,start});
+  }
+  const courts={};
+  for(const court of Object.keys(courtMatches)){
+    const list=courtMatches[court].sort((a,b)=>a.start-b.start);
+    const matches=list.map((mm,i)=>{ const end=list[i+1]?list[i+1].start:t1;
+      const m=meta[mm.mk]||{};
+      return Object.assign({court:mm.court,mId:mm.mId,teamA:m.teamA||'',teamB:m.teamB||''}, statWindow(byMatch[mm.mk],mm.start,end)); });
+    const agg=matches.reduce((a,o)=>({mon:a.mon+o.mon,healthy:a.healthy+o.healthy,down:a.down+o.down,inc:a.inc+o.inc}),{mon:0,healthy:0,down:0,inc:0});
+    agg.uptime=agg.mon?agg.healthy/agg.mon:1;
+    courts[court]={matches,agg};
+  }
+  return courts;
+}
+
+function buildReport(events,t0,t1,meta={}){
+  const R=rollup(events,t0,t1,meta), courts=Object.keys(R).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  const dstr=new Date(t0).toLocaleDateString();
+  const allMatches=courts.flatMap(c=>R[c].matches);
+  // ---- CSV (per match) ----
+  let csv='court,match,players,uptime_%,monitored_min,down_min,incidents,longest_min,mttr_min,change_min,frozen_min,no_signal_min,no_frames_min\n';
+  const mn=x=>((x||0)/60000).toFixed(1);
+  for(const c of courts) for(const o of R[c].matches){
+    csv+=[c,o.mId,'"'+(o.teamA+' vs '+o.teamB)+'"',(o.uptime*100).toFixed(2),mn(o.mon),mn(o.down),
+      o.inc,(o.longest/60000).toFixed(1),(o.mttr/60000).toFixed(1),
+      mn(o.byR['CHANGE']),mn(o.byR['FROZEN']),mn(o.byR['NO SIGNAL']),mn(o.byR['NO FRAMES'])].join(',')+'\n'; }
+  // ---- summary ----
+  const nC=courts.length||1;
+  const avgUp=courts.reduce((s,c)=>s+R[c].agg.uptime,0)/nC;
+  const totInc=allMatches.reduce((s,o)=>s+o.inc,0);
+  const worst=courts.slice().sort((a,b)=>R[a].agg.uptime-R[b].agg.uptime)[0];
+  const upColor=u=> u>=0.99?'#4ec9b0' : u>=0.95?'#c58a1a' : '#ff5a5f';
+  const ticks=sp=>{ let h=''; for(let i=0;i<=sp;i+=3600000){ h+=`<span style="position:absolute;left:${(i/sp*100).toFixed(2)}%;top:0;bottom:0;border-left:1px solid #1c2530"></span>`; } return h; };
+  const matchRow=o=>{ const up=o.uptime*100, sp=Math.max(1,o.winEnd-o.winStart);
+    const tl=o.segs.map(s=>`<span style="display:inline-block;height:100%;width:${(s.dur/sp*100).toFixed(3)}%;background:${COL[s.state]||'#444'}"></span>`).join('');
+    const reasons=Object.entries(o.byR).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<span class="pill"><b style="background:${COL[k]}"></b>${k} ${fmtM(v)}</span>`).join('')||'<span class="dim">no downtime</span>';
+    const players=(o.teamA||o.teamB)?`${o.teamA} vs ${o.teamB}`:'';
+    return `<div class="match">
+      <div class="mhead"><div><span class="mid">${o.mId}</span> <span class="players">${players}</span>
+        <div class="csince">${new Date(o.winStart).toLocaleTimeString()} → ${new Date(o.winEnd).toLocaleTimeString()} · ${fmtM(o.mon)} monitored · ${o.inc} incidents · longest ${fmtM(o.longest)}</div></div>
+        <div class="cup" style="color:${upColor(o.uptime)}">${up.toFixed(2)}<span class="pc">%</span></div></div>
+      <div class="tlwrap"><div class="tl">${tl}</div><div class="ticks">${ticks(sp)}</div></div>
+      <div class="reasons">${reasons}</div></div>`; };
+  const cards=courts.map(c=>{ const A=R[c].agg;
+    return `<div class="card">
+      <div class="chead"><div class="cname">${c}</div>
+        <div class="cup" style="color:${upColor(A.uptime)};font-size:20px">${(A.uptime*100).toFixed(2)}<span class="pc">%</span>
+        <span class="dim" style="font-size:11px;margin-left:8px">${R[c].matches.length} match${R[c].matches.length>1?'es':''} · ${fmtM(A.down)} down</span></div></div>
+      <div class="ubar"><div class="ufill" style="width:${(A.uptime*100).toFixed(2)}%;background:${upColor(A.uptime)}"></div></div>
+      ${R[c].matches.map(matchRow).join('')}
+    </div>`; }).join('');
+  const html=`<!doctype html><html><head><meta charset=utf-8><title>Stream uptime — ${dstr}</title>
+  <style>
+  :root{--bg:#0b0e12;--pan:#12161c;--ln:#20272f;--ink:#dfe6ee;--dim:#7d8a99;--ac:#4ec9b0}
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);font-family:ui-monospace,"Cascadia Code",Menlo,Consolas,monospace;margin:0 auto;padding:32px;max-width:1100px}
+  h1{font-size:16px;letter-spacing:.16em;text-transform:uppercase;margin:0}
+  .sub{color:var(--dim);font-size:12px;margin:6px 0 24px}
+  .toolbar{position:sticky;top:0;text-align:right;margin-bottom:8px}
+  .toolbar button{background:var(--ac);color:#04110d;border:0;padding:9px 18px;border-radius:6px;font-family:inherit;font-size:12px;font-weight:700;letter-spacing:.04em;cursor:pointer}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:26px}
+  .kpi{background:var(--pan);border:1px solid var(--ln);border-radius:10px;padding:16px}
+  .kpi .n{font-size:24px;font-weight:700}.kpi .l{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin-top:4px}
+  .card{background:var(--pan);border:1px solid var(--ln);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+  .chead{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+  .cname{font-size:15px;font-weight:700;letter-spacing:.06em}
+  .cup{font-size:24px;font-weight:700}.cup .pc{font-size:13px;opacity:.7}
+  .ubar{height:7px;background:#0a0d11;border-radius:4px;overflow:hidden;margin:0 0 16px}.ufill{height:100%;border-radius:4px}
+  .match{border-top:1px solid var(--ln);padding-top:12px;margin-top:12px}
+  .mhead{display:flex;justify-content:space-between;align-items:baseline}
+  .mid{font-weight:700;color:var(--ac);letter-spacing:.04em}.players{color:var(--ink);font-size:12px}
+  .csince{color:var(--dim);font-size:10px;margin-top:3px}
+  .tlwrap{position:relative;margin:10px 0 8px}
+  .tl{height:15px;width:100%;border-radius:3px;overflow:hidden;background:#161b22;white-space:nowrap;font-size:0}
+  .ticks{position:absolute;inset:0;pointer-events:none}
+  .reasons{display:flex;flex-wrap:wrap;gap:8px 14px;font-size:11px}
+  .pill b{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:middle;margin-right:5px}
+  .dim{color:var(--dim)}
+  .legend{margin-top:22px;color:var(--dim);font-size:11px}.legend b{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:middle;margin:0 5px 0 14px}
+  @media print{ body{padding:0;color:#111;background:#fff}.toolbar{display:none}
+    .kpi,.card{background:#fff;border-color:#ccc;break-inside:avoid}.tl{background:#eee}
+    .kpi .n,.cname,.players,.mid{color:#111}h1{color:#111} }
+  </style></head><body>
+  <div class="toolbar"><button onclick="window.print()">Save as PDF / Print</button></div>
+  <h1>Stream uptime report</h1>
+  <div class="sub">${dstr} · ${new Date(t0).toLocaleTimeString()} → ${new Date(t1).toLocaleTimeString()} · per match · uptime = healthy ÷ monitored</div>
+  <div class="kpis">
+    <div class="kpi"><div class="n" style="color:${upColor(avgUp)}">${(avgUp*100).toFixed(1)}%</div><div class="l">Avg court uptime</div></div>
+    <div class="kpi"><div class="n">${courts.length}</div><div class="l">Courts</div></div>
+    <div class="kpi"><div class="n">${allMatches.length}</div><div class="l">Matches</div></div>
+    <div class="kpi"><div class="n">${worst?worst+' ('+(R[worst].agg.uptime*100).toFixed(1)+'%)':'—'}</div><div class="l">Worst court</div></div>
+  </div>
+  ${cards||'<div class="card dim">No data yet — connect NATS, assign regions to courts, and leave it monitoring.</div>'}
+  <div class="legend">Timeline (each bar spans that match; gridlines every hour):
+    <b style="background:${COL.OK}"></b>OK<b style="background:${COL.CHANGE}"></b>Change
+    <b style="background:${COL.FROZEN}"></b>Frozen<b style="background:${COL['NO SIGNAL']}"></b>No signal
+    <b style="background:${COL['NO FRAMES']}"></b>No frames<b style="background:${COL.__gap}"></b>Not monitored</div>
+  </body></html>`;
+  return {html,csv};
+}
+
+async function downloadReport(){
+  const d=new Date(); d.setHours(0,0,0,0); const t0=d.getTime(), t1=Date.now();
+  const {html,csv}=buildReport(uptimeEvents,t0,t1,matchMeta);
+  // NOTE: the sheet is written ONLY on match rollover (finishMatch), never here —
+  // the PDF is an on-demand snapshot; the sheet is the finalised per-match record.
+  if(window.uptimeStore && window.uptimeStore.saveReport){ try{ await window.uptimeStore.saveReport({html,csv}); return; }catch(e){} }
+  const dl=(n,c,t)=>{const b=new Blob([c],{type:t}),u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download=n;a.click();URL.revokeObjectURL(u);};
+  dl('stream-uptime.html',html,'text/html'); dl('stream-uptime.csv',csv,'text/csv');
+}
+document.getElementById('report').onclick=downloadReport;
+{ const ib=document.getElementById('ingest-beta');
+  if(window.ingestAPI) ib.onclick=()=>window.ingestAPI.openTest();
+  else { ib.disabled=true; ib.title='desktop app only'; } }
+document.getElementById('fullscreen').onclick=()=>{
+  if(document.fullscreenElement){ document.exitFullscreen(); }
+  else { stage.requestFullscreen && stage.requestFullscreen().catch(()=>{}); }
+};
+document.addEventListener('fullscreenchange',()=>{
+  document.getElementById('fullscreen').textContent=document.fullscreenElement?'⛶ Exit full screen':'⛶ Fullscreen';
+});
+
+// Manually finalise a court's current (un-rolled) match — for end of day, when no next
+// match arrives to trigger the automatic export. A picker lets you choose exactly which
+// court to export, so a still-live court is never snapshotted by accident. Deduped.
+function currentMatches(){
+  const t1=Date.now(); const d=new Date(); d.setHours(0,0,0,0); const t0=d.getTime();
+  const R=rollup(uptimeEvents,t0,t1,matchMeta); const out=[];
+  for(const c of Object.keys(R)){ const ms=R[c].matches; const o=ms[ms.length-1];
+    if(o && matchMeta[c+'#'+o.mId]) out.push({court:c,o,has:!!matchRows[c+'#'+o.mId]}); }
+  return out;
+}
+document.getElementById('export-finals').onclick=(e)=>{
+  if(!window.sheetsAPI){ sheetSay('desktop app only',true); return; }
+  document.querySelectorAll('.exp-menu').forEach(m=>m.remove());
+  const items=currentMatches();
+  const menu=document.createElement('div'); menu.className='exp-menu';
+  const rect=e.target.getBoundingClientRect();
+  menu.style.cssText=`position:fixed;left:${rect.left}px;top:${rect.bottom+4}px;z-index:9999;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px;min-width:250px;font-family:var(--mono);font-size:12px`;
+  const row=(label,fn)=>{ const b=document.createElement('button');
+    b.textContent=label; b.style.cssText='display:block;width:100%;text-align:left;margin:2px 0;padding:7px 10px;background:#0b0e12;border:1px solid var(--line);color:var(--ink);border-radius:5px;cursor:pointer;font-family:var(--mono);font-size:12px';
+    b.onmouseenter=()=>b.style.borderColor='var(--accent)'; b.onmouseleave=()=>b.style.borderColor='var(--line)';
+    b.onclick=async()=>{ menu.remove(); await fn(); }; menu.appendChild(b); };
+  if(!items.length){ row('nothing to export',()=>{}); }
+  else {
+    items.forEach(({court,o,has})=>{
+      row(`${court} · ${o.mId} — ${(o.uptime*100).toFixed(1)}%  ${has?'⟳ update row':'＋ new'}`,
+        ()=>exportOrUpdate(court,o.mId,o.winStart,o.winEnd)); });
+    if(items.length>1) row('▸ Export / update all listed', async()=>{ let n=0;
+      for(const {court,o} of items){ if(await exportOrUpdate(court,o.mId,o.winStart,o.winEnd)) n++; }
+      sheetSay(n?('wrote '+n+' row'+(n>1?'s':'')):'nothing written'); });
+  }
+  document.body.appendChild(menu);
+  setTimeout(()=>document.addEventListener('pointerdown',function h(ev){ if(!menu.contains(ev.target)){ menu.remove(); document.removeEventListener('pointerdown',h); } }),0);
+};
+
+restoreEvents();
+
+// ---------- NATS court roster + region assignment ----------
+let lastRoster=[]; const natsStarts={};   // court label -> firstSeen ms (report window start)
+function deriveTName(u){ try{ const host=String(u).replace(/^nats:\/\//,'').split(':')[0].split('.')[0];
+  return host.split('-court')[0].replace(/-nats$/,''); }catch(e){ return ''; } }
+const courtKey=c=>c.tId+':'+c.courtId;                 // unique across tournaments
+const courtLabel=c=>deriveTName(c.url)+' · Court '+c.courtId;   // unique, readable
+function fillSelect(r){ if(!r.sel) return; const cur=r.courtKey||'';
+  r.sel.innerHTML='<option value="">— court —</option>'+lastRoster.map(c=>`<option value="${courtKey(c)}">${deriveTName(c.url)} — Court ${c.courtId}</option>`).join('');
+  r.sel.value=cur; }
+function assignCourt(r,val){
+  if(!val){ r.courtId=null; r.tId=null; r.courtKey=null; r.court='CAM '+r.id; r.nm.textContent='CAM '+r.id; r.el.title=''; r.lastLog=null; return; }
+  const c=lastRoster.find(x=>courtKey(x)===val); if(!c) return;
+  r.courtId=c.courtId; r.tId=c.tId; r.tName=deriveTName(c.url); r.url=c.url; r.courtKey=val;
+  r.court=courtLabel(c); r.nm.textContent='Court '+c.courtId+(c.mId?(' · '+c.mId):'');
+  r.el.title=r.tName+': '+(c.teamA||'?')+' vs '+(c.teamB||'?');
+  natsStarts[r.court]=c.firstSeen; r.lastLog=null; }
+function renderRoster(list){
+  lastRoster=list||[]; const now=Date.now();
+  lastRoster.forEach(c=>{
+    const key=courtKey(c), label=courtLabel(c), prev=natsCurrentMId[key], tName=deriveTName(c.url);
+    natsStarts[label]=c.firstSeen;
+    const mk=label+'#'+c.mId;
+    if(!matchMeta[mk]){ matchMeta[mk]={court:label,courtId:c.courtId,tId:c.tId,tName,url:c.url,mId:c.mId,teamA:c.teamA,teamB:c.teamB,firstSeen:c.firstSeen}; logMeta(matchMeta[mk]); }
+    if(prev && prev!==c.mId){
+      const w0=matchMeta[label+'#'+prev]?.firstSeen || (c.firstSeen-1);
+      finishMatch(label, prev, w0, c.firstSeen);
+      const r=regions.find(x=>x.courtKey===key);
+      if(r){ r.ref=null; reset(r); r.lastLog=null; }
+    }
+    natsCurrentMId[key]=c.mId;
+  });
+  document.getElementById('roster').innerHTML=lastRoster.map(c=>{
+    const stale=now-c.lastSeen>10000, since=new Date(c.firstSeen).toLocaleTimeString();
+    const vs=(c.teamA||'?')+' vs '+(c.teamB||'?');
+    return `<div class="court"><span class="dot ${stale?'stale':''}"></span><span class="id">${deriveTName(c.url)} · Court ${c.courtId}</span> · <span class="pl">${vs}</span>`
+      +`<div class="meta">${c.mId||''} · tId ${c.tId} · recording since ${since}${stale?' · packets stale':''}</div></div>`;
+  }).join('');
+  regions.forEach(r=>{ fillSelect(r);
+    if(r.courtKey){ const c=lastRoster.find(x=>courtKey(x)===r.courtKey);
+      if(c){ r.nm.textContent='Court '+c.courtId+(c.mId?(' · '+c.mId):''); r.el.title=r.tName+': '+(c.teamA||'?')+' vs '+(c.teamB||'?'); } } });
+}
+function renderServers(list){
+  const el=document.getElementById('nats-list'); if(!el) return;
+  el.innerHTML=(list||[]).map(sv=>`<span class="court" style="display:inline-flex;align-items:center;gap:8px;margin-right:8px">`
+    +`<span class="dot ${sv.connected?'':'stale'}"></span><span class="id">${deriveTName(sv.url)}</span>`
+    +`<span style="color:var(--dim);font-size:10px">${sv.url}</span>`
+    +`<button data-url="${sv.url}" class="rm" style="background:none;border:1px solid var(--line);color:var(--dim);border-radius:4px;cursor:pointer;font-family:var(--mono);font-size:11px;padding:1px 7px">×</button></span>`).join('');
+  el.querySelectorAll('.rm').forEach(b=>b.onclick=async()=>{ await window.natsAPI.disconnect(b.dataset.url); renderServers(await window.natsAPI.servers()); });
+}
+
+// ---- Google Sheets: one row per finished match ----
+const exportedMatches=new Set(); const matchRows={};   // matchKey -> sheet row number
+function matchRowArr(court,mId,o,meta){ const mn=x=>((x||0)/60000).toFixed(1);
+  const p=n=>String(n).padStart(2,'0');
+  const dt=ms=>{const d=new Date(ms);return "'"+`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;};
+  const dOnly=ms=>{const d=new Date(ms);return "'"+`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;};
+  const players=meta?((meta.teamA||'')+' vs '+(meta.teamB||'')):'';
+  const tId=(meta&&meta.tId)||'', tName=(meta&&meta.tName)||'', url=(meta&&meta.url)||'';
+  const courtDisp='Court '+((meta&&meta.courtId) || String(court).replace(/^.*Court\s*/,''));
+  return [ dOnly(o.winStart), tId, tName, courtDisp, mId, players, dt(o.winStart), dt(o.winEnd),
+    (o.uptime*100).toFixed(2), mn(o.mon), mn(o.down), o.inc, (o.longest/60000).toFixed(1), (o.mttr/60000).toFixed(1),
+    mn(o.byR['CHANGE']), mn(o.byR['FROZEN']), mn(o.byR['NO SIGNAL']), mn(o.byR['NO FRAMES']),
+    url ]; }
+function sheetSay(msg,err){ const el=document.getElementById('sheet-status'); if(!el)return;
+  el.textContent=msg; el.className='chip'+(err?' err':' on'); }
+async function finishMatch(court,mId,w0,w1){
+  const mk=court+'#'+mId;
+  if(!matchMeta[mk]) return false;                      // only export NATS/court-assigned matches
+  if(exportedMatches.has(mk)) return false;
+  const evs=uptimeEvents.filter(e=>!e.meta && e.court===court && (e.mId||'—')===mId);
+  if(!evs.length) return false;                          // no monitoring data for this court/match
+  if(!window.sheetsAPI){ sheetSay('desktop app only',true); return false; }
+  const o=statWindow(evs,w0,w1);
+  const res=await window.sheetsAPI.append(matchRowArr(court,mId,o,matchMeta[mk]));
+  if(res&&res.ok){ exportedMatches.add(mk); matchRows[mk]=res.row; return true; }
+  sheetSay('sheet NOT written: '+((res&&res.error)||'failed'),true); return false;   // retry later, don't mark done
+}
+// Manual export/override: if this match already has a sheet row, overwrite it with fresh
+// values (same row); otherwise append a new row and remember where it went.
+async function exportOrUpdate(court,mId,w0,w1){
+  const mk=court+'#'+mId;
+  if(!matchMeta[mk]){ sheetSay('assign to a court first',true); return false; }
+  const evs=uptimeEvents.filter(e=>!e.meta && e.court===court && (e.mId||'—')===mId);
+  if(!evs.length){ sheetSay('no data for '+court+' '+mId,true); return false; }
+  if(!window.sheetsAPI){ sheetSay('desktop app only',true); return false; }
+  const rowVals=matchRowArr(court,mId,statWindow(evs,w0,w1),matchMeta[mk]);
+  if(matchRows[mk]){ const res=await window.sheetsAPI.update(matchRows[mk],rowVals);
+    if(res&&res.ok){ sheetSay('updated '+court+' '+mId+' · row '+matchRows[mk]); return true; }
+    sheetSay('update failed: '+((res&&res.error)||''),true); return false; }
+  const res=await window.sheetsAPI.append(rowVals);
+  if(res&&res.ok){ exportedMatches.add(mk); matchRows[mk]=res.row; sheetSay('exported '+court+' '+mId+(res.row?(' · row '+res.row):'')); return true; }
+  sheetSay('sheet NOT written: '+((res&&res.error)||''),true); return false;
+}
+if(window.natsAPI){
+  window.natsAPI.onUpdate(renderRoster);
+  window.natsAPI.roster().then(renderRoster);
+  window.natsAPI.servers().then(renderServers);
+  const st=document.getElementById('nats-status'), url=document.getElementById('nats-url'), btn=document.getElementById('nats-connect');
+  btn.onclick=async()=>{
+    const u=url.value.trim(); if(!u){ st.textContent='enter a URL'; st.className='chip err'; return; }
+    st.textContent='connecting…'; st.className='chip';
+    const res=await window.natsAPI.connect(u);
+    if(res&&res.ok){ st.textContent='added'; st.className='chip on'; url.value=''; renderServers(await window.natsAPI.servers()); }
+    else{ st.textContent='error: '+((res&&res.error)||'failed'); st.className='chip err'; }
+  };
+} else {
+  const b=document.getElementById('natsbar'); if(b) b.style.opacity=.45;
+  const st=document.getElementById('nats-status'); if(st) st.textContent='desktop app only';
+}
+
+// ---- Sheets status (key is bundled + auto-loaded in main; nothing to configure) ----
+if(window.sheetsAPI){
+  const poll=()=>window.sheetsAPI.status().then(s=>{ if(s&&s.ready) sheetSay('sheet linked'); else { const el=document.getElementById('sheet-status'); if(el){el.textContent='sheet linking…';el.className='chip';} } });
+  poll(); setTimeout(poll,2500); setTimeout(poll,6000);
+} else {
+  const b=document.getElementById('sheetbar'); if(b) b.style.opacity=.45;
+  const s=document.getElementById('sheet-status'); if(s) s.textContent='desktop app only';
+}
+
+// ---------- audio monitoring (Web Audio) + alignment overlay ----------
+// Ported from tennis_control_room_v8 AudioProcessor: no-audio keyed on PEAK (3s),
+// loudest-25ms-sub-frame metering, adaptive voice threshold, no-speech alert.
+let audioCtx=null, analyser=null, audioBuf=null, elemSrc=null;
+let naSince=null, lastSpoke=0, floorHist=[];
+const NOAUDIO_DB=-62, CLIP_DB=-3, SPEAK_MANUAL=-45, SPEAK_MARGIN=9, NOSPEECH_S=90;   // tennis_v8.json
+function ensureCtx(){ if(!audioCtx){ try{ audioCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } return audioCtx; }
+function audioSay(txt,cls){ const el=document.getElementById('audio-status'); if(el){ el.textContent=txt; el.className='chip '+(cls||'ok'); } }
+function resetAudio(){ naSince=null; lastSpoke=performance.now(); floorHist=[]; }
+function setupAudio(stream){
+  const ctx=ensureCtx(); if(!ctx) return;
+  const at=stream.getAudioTracks?stream.getAudioTracks():[];
+  if(!at.length){ analyser=null; audioSay('no audio track','warn'); return; }
+  try{ const src=ctx.createMediaStreamSource(stream);
+    analyser=ctx.createAnalyser(); analyser.fftSize=2048; audioBuf=new Float32Array(analyser.fftSize);
+    src.connect(analyser); resetAudio(); ctx.resume&&ctx.resume(); }catch(e){ analyser=null; }
+}
+function setupAudioElement(){
+  const ctx=ensureCtx(); if(!ctx) return;
+  try{ if(!elemSrc) elemSrc=ctx.createMediaElementSource(vid);   // taps file audio (no output → stays muted)
+    analyser=ctx.createAnalyser(); analyser.fftSize=2048; audioBuf=new Float32Array(analyser.fftSize);
+    elemSrc.connect(analyser); resetAudio(); ctx.resume&&ctx.resume(); }catch(e){ analyser=null; }
+}
+const dbfs=x=>20*Math.log10(Math.max(x,3.16e-5));   // floor ≈ -90 dBFS
+function speakThreshold(){   // adaptive: quiet-floor (25th pct) + margin, clamped
+  let floor=-65; if(floorHist.length>=20){ const a=[...floorHist].sort((x,y)=>x-y); floor=a[Math.floor(a.length*0.25)]; }
+  return Math.max(-58, Math.min(floor+SPEAK_MARGIN, Math.max(SPEAK_MANUAL,-34)));
+}
+function pollAudio(dt){
+  if(!analyser) return; analyser.getFloatTimeDomainData(audioBuf);
+  const N=audioBuf.length, sr=(audioCtx&&audioCtx.sampleRate)||48000, now=performance.now();
+  let sum=0,peak=0; for(let i=0;i<N;i++){ const v=audioBuf[i]; sum+=v*v; const a=Math.abs(v); if(a>peak)peak=a; }
+  const masterDb=dbfs(Math.sqrt(sum/N)), peakDb=dbfs(peak);
+  // loudest / quietest 25 ms sub-frame → catches brief calls; quiet ones feed the noise floor
+  const sub=Math.max(1,Math.round(sr*0.025)); let shortDb=masterDb, minSub=masterDb;
+  if(N>=sub){ shortDb=-999; minSub=999; for(let o=0;o+sub<=N;o+=sub){ let s2=0; for(let i=0;i<sub;i++){ const v=audioBuf[o+i]; s2+=v*v; } const d=dbfs(Math.sqrt(s2/sub)); if(d>shortDb)shortDb=d; if(d<minSub)minSub=d; } }
+  floorHist.push(minSub); if(floorHist.length>400) floorHist.shift();
+  if(peakDb>NOAUDIO_DB) naSince=now; else if(naSince===null) naSince=now;
+  const noAudio = peakDb<=NOAUDIO_DB && (now-naSince)>3000;
+  const speaking = shortDb>speakThreshold() && peakDb>NOAUDIO_DB;
+  if(speaking) lastSpoke=now;
+  const shown=Math.max(masterDb, peakDb-6);   // peak-biased so brief calls visibly register
+  const fill=document.getElementById('vu-fill'); if(fill) fill.style.width=Math.max(0,Math.min(100,(shown+60)/60*100)).toFixed(0)+'%';
+  const gap=(now-lastSpoke)/1000;
+  if(noAudio)                 audioSay('NO AUDIO','warn');
+  else if(peakDb>CLIP_DB)     audioSay('CLIP · '+masterDb.toFixed(0)+' dB','warn');
+  else if(gap>NOSPEECH_S)     audioSay('no speech '+Math.floor(gap)+'s','warn');
+  else if(speaking)           audioSay('● speech · '+masterDb.toFixed(0)+' dB','ok');
+  else                        audioSay(masterDb.toFixed(0)+' dB','ok');
+}
+
+let gridOn=false, ovlOp=0.55;
+function applyOverlay(){
+  regions.forEach(r=>{ r.el.classList.toggle('showgrid',gridOn); const g=r.el.querySelector('.grid'); if(g)g.style.opacity=ovlOp; });
+  const so=document.getElementById('stage-overlay'); if(so) so.style.opacity=ovlOp;
+}
+document.getElementById('ovl-toggle').onclick=()=>{ gridOn=!gridOn;
+  document.getElementById('ovl-toggle').textContent='Alignment overlay: '+(gridOn?'on':'off'); applyOverlay(); };
+document.getElementById('ovl-op').oninput=e=>{ ovlOp=e.target.value/100; applyOverlay(); };
+document.getElementById('ovl-img').onclick=()=>{ const i=document.createElement('input'); i.type='file'; i.accept='image/*';
+  i.onchange=()=>{ const f=i.files[0]; if(!f)return; const so=document.getElementById('stage-overlay');
+    so.src=URL.createObjectURL(f); so.style.display='block'; so.style.opacity=ovlOp; document.getElementById('ovl-clear').style.display=''; }; i.click(); };
+document.getElementById('ovl-clear').onclick=()=>{ const so=document.getElementById('stage-overlay');
+  so.style.display='none'; so.removeAttribute('src'); document.getElementById('ovl-clear').style.display='none'; };
+
+// ---------- line-up drift tracking (OpenCV, lazy + throttled, fully optional) ----------
+// Ported from tennis_control_room_v8 ReferenceLineup: lock ORB features of the current
+// frame, then measure homography drift (pan/tilt/rotation/zoom) vs that reference.
+// OpenCV loads only on first Lock; measurement runs on a slow timer, never the render loop.
+const TOL_TRANS=6.0, TOL_ROT=0.4, TOL_ZOOM=1.5, HARD_TRANS=25.0, HARD_ROT=2.0, HARD_ZOOM=6.0, MIN_MATCHES=12;
+const LOCK_W=480;                       // downscaled width for feature work (cheap + stable)
+let cv=null, cvState='idle';            // idle | loading | ready | failed
+const ocv=document.createElement('canvas'), ocvx=ocv.getContext('2d',{willReadFrequently:true});
+let cvEmpty=null;
+function emptyMask(){ if(!cvEmpty) cvEmpty=new cv.Mat(); return cvEmpty; }
+function makeORB(){ try{ return new cv.ORB(800); }catch(e){ try{ return cv.ORB_create(800); }catch(_){ return new cv.ORB(); } } }
+
+function loadCV(){
+  if(cvState==='ready'||cvState==='loading') return;
+  cvState='loading';
+  const s=document.createElement('script'); s.async=true;
+  s.src=(window.natsAPI?'opencv.js':'https://docs.opencv.org/4.10.0/opencv.js');   // bundled in app; CDN fallback in plain browser
+  s.onload=async()=>{ try{ let m=window.cv; if(m&&typeof m.then==='function') m=await m;
+      if(m && m.getBuildInformation){ cv=m; cvState='ready'; }
+      else if(m){ m.onRuntimeInitialized=()=>{ cv=m; cvState='ready'; }; }
+      else cvState='failed'; }catch(e){ cvState='failed'; } };
+  s.onerror=()=>{ cvState='failed'; };
+  document.head.appendChild(s);
+}
+// grab the current frame of a region as an OpenCV gray Mat (downscaled)
+function regionGray(r){
+  if(!cv||!vid.videoWidth) return null;
+  const vw=vid.videoWidth, vh=vid.videoHeight;
+  const sx=Math.floor(r.x*vw), sy=Math.floor(r.y*vh), sw=Math.floor(r.w*vw), sh=Math.floor(r.h*vh);
+  if(sw<40||sh<40) return null;
+  const w=LOCK_W, h=Math.max(2,Math.round(sh*LOCK_W/sw));
+  ocv.width=w; ocv.height=h;
+  try{ ocvx.drawImage(vid, sx,sy,sw,sh, 0,0,w,h); }catch(e){ return null; }
+  const src=cv.matFromImageData(ocvx.getImageData(0,0,w,h));
+  const gray=new cv.Mat(); cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY); src.delete();
+  return gray;
+}
+function toggleLock(r){
+  if(r.lockRef){ // unlock
+    r.lockRef.kp.delete(); r.lockRef.des.delete(); r.lockRef=null;
+    r.lockBtn.classList.remove('locked'); r.lockBtn.textContent='Lock line-up';
+    r.driftEl.className='drift'; r.driftEl.textContent=''; return;
+  }
+  if(cvState!=='ready'){ loadCV(); r.driftEl.className='drift show'; r.driftEl.textContent='loading vision…';
+    const wait=setInterval(()=>{ if(cvState==='ready'){ clearInterval(wait); doLock(r); }
+      else if(cvState==='failed'){ clearInterval(wait); r.driftEl.textContent='vision unavailable'; } },200);
+    return;
+  }
+  doLock(r);
+}
+function doLock(r){
+  const gray=regionGray(r); if(!gray){ r.driftEl.className='drift show'; r.driftEl.textContent='no frame'; return; }
+  try{
+    const orb=makeORB(), kp=new cv.KeyPointVector(), des=new cv.Mat();
+    orb.detectAndCompute(gray, emptyMask(), kp, des); orb.delete();
+    if(kp.size()<MIN_MATCHES){ kp.delete(); des.delete(); gray.delete();
+      r.driftEl.className='drift show bad'; r.driftEl.textContent='too few features — reframe & retry'; return; }
+    r.lockRef={kp,des,w:gray.cols,h:gray.rows,at:Date.now()}; gray.delete();
+    r.lockBtn.classList.add('locked'); r.lockBtn.textContent='Locked ✓';
+    r.driftEl.className='drift show good'; r.driftEl.textContent='GOOD · locked';
+  }catch(e){ gray.delete&&gray.delete(); r.driftEl.className='drift show bad'; r.driftEl.textContent='lock failed'; }
+}
+let matcher=null;
+function measureDrift(r){
+  if(!cv||!r.lockRef) return;
+  const gray=regionGray(r); if(!gray) return;
+  let kp2=null,des2=null,good=null,src=null,dst=null,H=null,mask=null;
+  try{
+    const orb=makeORB(); kp2=new cv.KeyPointVector(); des2=new cv.Mat();
+    orb.detectAndCompute(gray, emptyMask(), kp2, des2); orb.delete();
+    if(kp2.size()<MIN_MATCHES){ setDrift(r,'bad','LOW MATCH'); return; }
+    if(!matcher) matcher=new cv.BFMatcher(cv.NORM_HAMMING,false);
+    const knn=new cv.DMatchVectorVector(); matcher.knnMatch(r.lockRef.des,des2,knn,2);
+    const gm=[];
+    for(let i=0;i<knn.size();i++){ const m=knn.get(i); if(m.size()<2) continue; const a=m.get(0),b=m.get(1); if(a.distance<0.75*b.distance) gm.push(a); }
+    knn.delete();
+    if(gm.length<MIN_MATCHES){ setDrift(r,'bad','LOW MATCH ('+gm.length+')'); return; }
+    const sp=[], dp=[];
+    for(const m of gm){ const p1=r.lockRef.kp.get(m.queryIdx).pt, p2=kp2.get(m.trainIdx).pt; sp.push(p1.x,p1.y); dp.push(p2.x,p2.y); }
+    src=cv.matFromArray(gm.length,1,cv.CV_32FC2,sp); dst=cv.matFromArray(gm.length,1,cv.CV_32FC2,dp);
+    mask=new cv.Mat(); H=cv.findHomography(src,dst,cv.RANSAC,4.0,mask);
+    if(H.empty()){ setDrift(r,'bad','NO FIT'); return; }
+    let inl=0; for(let i=0;i<mask.rows;i++) inl+=mask.data[i]?1:0;
+    if(inl<MIN_MATCHES){ setDrift(r,'bad','LOW MATCH ('+inl+')'); return; }
+    const a=H.doubleAt(0,0), b=H.doubleAt(0,1), c=H.doubleAt(1,0), d=H.doubleAt(1,1);
+    const sx=Math.hypot(a,c), sy=Math.hypot(b,d), scale=(sx+sy)/2;
+    const rot=Math.atan2(c,a)*180/Math.PI, tx=H.doubleAt(0,2), ty=H.doubleAt(1,2), zoom=(scale-1)*100;
+    // translations are in the downscaled space; report as-is (consistent, comparable to tolerances)
+    const t=Math.max(Math.abs(tx),Math.abs(ty));
+    let cls='good', st='GOOD';
+    if(t>HARD_TRANS||Math.abs(rot)>HARD_ROT||Math.abs(zoom)>HARD_ZOOM){ cls='bad'; st='NOT GOOD'; }
+    else if(t>TOL_TRANS||Math.abs(rot)>TOL_ROT||Math.abs(zoom)>TOL_ZOOM){ cls='check'; st='CHECK'; }
+    const parts=[];
+    if(Math.abs(rot)>0.15) parts.push('ROT '+(rot>0?'L':'R')+' '+Math.abs(rot).toFixed(2)+'°');
+    if(Math.abs(tx)>3) parts.push('PAN '+(tx>0?'L':'R')+' '+Math.abs(tx).toFixed(0)+'px');
+    if(Math.abs(ty)>3) parts.push('TILT '+(ty>0?'U':'D')+' '+Math.abs(ty).toFixed(0)+'px');
+    if(Math.abs(zoom)>1) parts.push('ZOOM '+(zoom>0?'OUT':'IN')+' '+Math.abs(zoom).toFixed(1)+'%');
+    setDrift(r, cls, st+(parts.length?(' · '+parts.join(' ')):'')+' · '+inl+' pts');
+    if(st==='NOT GOOD' && (!r.driftNotified || Date.now()-r.driftNotified>20000)){ r.driftNotified=Date.now();
+      notifyDrift(r.court&&/^Court|·/.test(r.court)?r.court:('CAM '+r.id), st, parts.join(' ')); }
+    if(st!=='NOT GOOD') r.driftNotified=0;
+  }catch(e){ /* transient — ignore */ }
+  finally{ [gray,kp2,des2,src,dst,H,mask].forEach(m=>{ try{ m&&m.delete&&m.delete(); }catch(_){} }); }
+}
+function setDrift(r,cls,txt){ if(r.driftEl){ r.driftEl.className='drift show '+cls; r.driftEl.textContent=txt; } }
+function notifyDrift(name,state,detail){ try{ if(window.Notification){ if(Notification.permission==='granted') new Notification(name+' line-up '+state, {body:detail||'camera moved'});
+  else if(Notification.permission!=='denied') Notification.requestPermission(); } }catch(e){} }
+// slow measurement loop — independent of the render loop, ~1.5 Hz, only for locked regions
+setInterval(()=>{ if(cvState!=='ready') return; for(const r of regions){ if(r.lockRef && !r.dragging) measureDrift(r); } }, 700);
+
+// start
+seed();
+if('requestVideoFrameCallback' in HTMLVideoElement.prototype){
+  const cb=()=>{step(); vid.requestVideoFrameCallback(cb);}; vid.requestVideoFrameCallback(cb);
+} else setInterval(step,50);
+</script>

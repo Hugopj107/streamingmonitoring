@@ -1,0 +1,31 @@
+{
+  "name": "stream-sentinel",
+  "version": "1.0.0",
+  "description": "Multi-region stream change / freeze / no-signal monitor",
+  "main": "main.js",
+  "dependencies": {
+    "nats": "^2.29.3",
+    "googleapis": "^174.0.1"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable",
+    "dist:installer": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.bolt6.streamsentinel",
+    "productName": "Stream Sentinel",
+    "files": ["main.js", "preload.js", "index.html", "nats-ingest.js", "sheets.js", "opencv.js", "ingest.js", "ingest-test.html", "qc.js", "assets/**/*", "node_modules/**/*"],
+    "extraResources": ["service-account.json"],
+    "win": {
+      "target": "portable"
+    },
+    "portable": {
+      "artifactName": "StreamSentinel.exe"
+    }
+  }
+}

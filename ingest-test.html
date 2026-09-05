@@ -1,0 +1,278 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Direct Ingest — beta</title>
+<style>
+  :root{--bg:#0b0e12;--panel:#12161c;--line:#20272f;--ink:#dfe6ee;--dim:#7d8a99;--accent:#4ec9b0;--warn:#ff2b3d;
+    --mono:"SF Mono",ui-monospace,"Cascadia Code",Menlo,Consolas,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:13px;padding:18px}
+  h1{font-size:14px;letter-spacing:.14em;text-transform:uppercase;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:11px;margin-bottom:14px}
+  .bar{display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap}
+  input{flex:1;min-width:300px;background:#0b0e12;border:1px solid var(--line);color:var(--ink);padding:8px 12px;border-radius:6px;font-family:var(--mono);font-size:12px}
+  input:focus{outline:none;border-color:var(--accent)}
+  button{background:var(--panel);border:1px solid var(--line);color:var(--ink);padding:8px 13px;border-radius:6px;cursor:pointer;font-family:var(--mono);font-size:12px}
+  button:hover{border-color:var(--accent)}
+  .chip{color:var(--dim);font-size:11px}
+  .stage{position:relative;background:#000;border:2px solid var(--line);border-radius:10px;overflow:hidden;aspect-ratio:16/9;max-width:860px}
+  .stage.alert{border-color:var(--warn);box-shadow:inset 0 0 50px rgba(255,43,61,.5);animation:pulse .5s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+  canvas{width:100%;height:100%;display:block;object-fit:contain;background:#000}
+  #grid-ovl{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;display:none;z-index:4}
+  #grid-ovl.on{display:block}
+  .hud{position:absolute;left:10px;top:10px;background:rgba(6,9,12,.8);border:1px solid var(--line);border-radius:6px;padding:8px 11px;font-size:11px;min-width:150px}
+  .hud .big{font-size:20px;font-weight:600}
+  .hud .st{margin-top:4px;padding:2px 7px;border-radius:4px;display:inline-block;font-size:10px;letter-spacing:.1em}
+  .st.ok{background:rgba(78,201,176,.14);color:var(--accent)} .st.bad{background:rgba(255,43,61,.18);color:var(--warn)}
+  .vu{width:180px;height:12px;background:#0a0d11;border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-top:8px}
+  .vu-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent) 0%,var(--accent) 70%,#c58a1a 85%,var(--warn) 100%)}
+  .viewbtn.on{border-color:var(--accent);color:var(--accent)}
+  .qc{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:280px}
+  .qc-head{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
+  .qc-verdict{font-size:14px;font-weight:700;letter-spacing:.06em}
+  .qc-row{display:flex;justify-content:space-between;align-items:center;font-size:12px;margin-bottom:6px}
+  .qc-badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px}
+  .pass{color:#04110d;background:var(--accent)} .check{color:#04110d;background:#c58a1a} .fail{color:#fff;background:var(--warn)} .na{color:var(--dim);background:#20272f}
+  .qc-bars{height:14px;border-radius:3px;overflow:hidden;display:flex;margin:6px 0;background:#0a0d11}
+  .qc-bars span{height:100%}
+  .qc-line{font-size:11px;color:var(--dim)}
+  .qc-action{font-size:11px;margin-top:5px;color:var(--ink);line-height:1.4}
+  .qc-action:empty{display:none}
+  .qc-action.warn{color:#c58a1a} .qc-action.bad{color:var(--warn)}
+</style>
+
+<h1>Direct Ingest — beta</h1>
+<div class="sub">Pulls one SRT/RTSP stream directly via ffmpeg — real per-court audio + frame-accurate detection. No screen-share.</div>
+
+<div class="bar">
+  <input id="url" placeholder="srt://host:port?passphrase=…  or  rtsp://…" autocomplete="off">
+  <button id="go">Start</button>
+  <button id="stop">Stop</button>
+  <span class="chip" id="ff"></span>
+</div>
+<div class="bar">
+  <span class="chip">View:</span>
+  <button id="v-normal" class="viewbtn on">Normal</button>
+  <button id="v-false">False colour (exposure)</button>
+  <button id="v-rgb">RGB balance</button>
+  <span style="width:12px"></span>
+  <button id="v-grid" class="viewbtn">⊞ Alignment grid</button>
+  <span style="width:12px"></span>
+  <button id="lock-btn" class="viewbtn">Lock line-up</button>
+  <span class="chip" id="drift"></span>
+</div>
+
+<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+<div class="stage" id="stage">
+  <canvas id="cv" width="384" height="216"></canvas>
+  <img id="grid-ovl" src="assets/tdi_alignment_grid.png" alt="">
+  <div class="hud">
+    <div class="chip">CHANGED BLOCKS</div>
+    <div class="big"><span id="pct">0</span>%</div>
+    <div class="chip" id="fps">0 fps</div>
+    <div class="st ok" id="state">WAITING</div>
+    <div class="chip" style="margin-top:8px">AUDIO <span id="db">— dB</span> <span class="qc-badge" id="aud-badge">—</span></div>
+    <div class="vu"><div class="vu-fill" id="vu"></div></div>
+    <div class="chip" id="aud-detail" style="margin-top:4px"></div>
+  </div>
+</div>
+
+<div class="qc" id="qc">
+  <div class="qc-head">Broadcast QC <span class="qc-verdict" id="qc-overall">—</span></div>
+  <div class="qc-row"><span>Exposure</span><span class="qc-badge" id="qc-exp">—</span></div>
+  <div class="qc-bars" id="qc-expbars"></div>
+  <div class="qc-line"><span id="qc-correct">correct —%</span> · <span id="qc-clip">clip —%</span> · <span id="qc-crush">crush —%</span></div>
+  <div class="qc-action" id="qc-exp-act"></div>
+  <div class="qc-row" style="margin-top:12px"><span>White balance</span><span class="qc-badge" id="qc-wb">—</span></div>
+  <div class="qc-line"><span id="qc-neutral">neutral —%</span> · <span id="qc-cast">cast —</span></div>
+  <div class="qc-action" id="qc-wb-act"></div>
+</div>
+</div>
+
+<script src="qc.js"></script>
+<script>
+const cv=document.getElementById('cv'), cx=cv.getContext('2d');
+const W=384,H=216, PW=192,PH=108;                 // detection resolution
+const off=document.createElement('canvas'); off.width=PW; off.height=PH;
+const ox=off.getContext('2d',{willReadFrequently:true});
+let ref=null, prevGray=null, stillMs=0, fracA=null, movA=null, baseFlick=null;
+let on=false, reason=null, badSince=null, goodSince=null, onSince=0;
+let lastFrameT=0, frames=0, fpsAvg=0, lastTick=performance.now();
+let view='normal', lastQCAt=0, lastRGBA=null;
+const qcStab = window.QCStabilizer ? new window.QCStabilizer() : null;
+
+// view toggles
+function setView(v){ view=v; ['normal','false','rgb'].forEach(k=>document.getElementById('v-'+k).classList.toggle('on',k===v)); if(lastRGBA) renderView(); }
+document.getElementById('v-normal').onclick=()=>setView('normal');
+document.getElementById('v-false').onclick=()=>setView('false');
+document.getElementById('v-rgb').onclick=()=>setView('rgb');
+document.getElementById('v-grid').onclick=()=>{ const b=document.getElementById('v-grid'), g=document.getElementById('grid-ovl');
+  const on=!g.classList.contains('on'); g.classList.toggle('on',on); b.classList.toggle('on',on); };
+
+if(window.ingestAPI){
+  window.ingestAPI.probe().then(p=>{ const el=document.getElementById('ff');
+    if(!p.ok){ el.textContent='⚠ '+p.error; el.style.color='#ff2b3d'; }
+    else { el.textContent='ffmpeg ok · SRT '+(p.srt?'✓':'✗')+' · RTSP '+(p.rtsp?'✓':'✗'); el.style.color=p.srt?'#4ec9b0':'#c58a1a'; } });
+  window.ingestAPI.onFrame(d=>drawFrame(d));
+  window.ingestAPI.onAudio(d=>onAudio(d));
+  window.ingestAPI.onStatus(d=>{ if(d.state==='NO FRAMES') setState('NO FRAMES',true); });
+  document.getElementById('go').onclick=()=>{ const u=document.getElementById('url').value.trim(); if(!u)return;
+    ref=null;prevGray=null;stillMs=0;fracA=movA=baseFlick=null; setState('CONNECTING…',false);
+    window.ingestAPI.start('1',u); };
+  document.getElementById('stop').onclick=()=>{ window.ingestAPI.stop('1'); setState('STOPPED',false); };
+} else { document.getElementById('ff').textContent='desktop app only'; }
+
+function drawFrame({w,h,buf,frozenMs}){
+  lastRGBA={ arr:new Uint8ClampedArray(buf.buffer||buf), w, h };
+  renderView();
+  ox.drawImage(cv,0,0,PW,PH);
+  analyse(ox.getImageData(0,0,PW,PH).data, frozenMs||0);
+  const now=performance.now();
+  if(now-lastQCAt>700){ lastQCAt=now; runQC(lastRGBA.arr,w,h); }   // QC ~1.4 Hz — cheap, off the frame path
+  frames++;
+  if(now-lastTick>=1000){ fpsAvg=frames*1000/(now-lastTick); frames=0; lastTick=now;
+    document.getElementById('fps').textContent=Math.round(fpsAvg)+' fps'; }
+  lastFrameT=now;
+}
+
+function renderView(){
+  const {arr,w,h}=lastRGBA;
+  if(view==='normal'){ cx.putImageData(new ImageData(arr,w,h),0,0); return; }
+  const out=new Uint8ClampedArray(arr.length);
+  if(view==='false') window.falseColorInto(arr,out,w,h); else window.rgbBalanceInto(arr,out,w,h);
+  cx.putImageData(new ImageData(out,w,h),0,0);
+}
+
+function runQC(arr,w,h){
+  let q=window.analyseQC(arr,w,h);
+  if(qcStab){ const s=qcStab.push(q); q={ exp:s.exp, wb:s.wb, verdict:s.verdict }; }   // temporal-stable verdict
+  const badge=(el,v)=>{ const e=document.getElementById(el); e.textContent=v;
+    e.className='qc-badge '+(v==='PASS'?'pass':v==='CHECK'?'check':v==='FAIL'?'fail':'na'); };
+  badge('qc-exp',q.verdict.exposure); badge('qc-wb',q.verdict.whiteBalance);
+  const ov=document.getElementById('qc-overall'); ov.textContent=q.verdict.overall;
+  ov.style.color=q.verdict.overall==='PASS'?'#4ec9b0':q.verdict.overall==='CHECK'?'#c58a1a':'#ff5a5f';
+  // exposure distribution bar (10 false-colour bands)
+  const pal=['#ff00ff','#000080','#0000ff','#00cc00','#00ff00','#80ff00','#ffff00','#ff8000','#ff0000','#ffffff'];
+  const b=q.exp; const segs=[b.crush,b.tooDark/2,b.tooDark/2,b.correct/3,b.correct/3,b.correct/3,b.bright/2,b.bright/2,b.nearClip,b.clip];
+  document.getElementById('qc-expbars').innerHTML=segs.map((v,i)=>`<span style="width:${v}%;background:${pal[i]}"></span>`).join('');
+  document.getElementById('qc-correct').textContent='correct '+b.correct.toFixed(0)+'%';
+  document.getElementById('qc-clip').textContent='clip '+b.clipping.toFixed(1)+'%';
+  document.getElementById('qc-crush').textContent='crush '+b.crush.toFixed(1)+'%';
+  document.getElementById('qc-neutral').textContent='neutral '+q.wb.neutral.toFixed(0)+'%';
+  document.getElementById('qc-cast').textContent = q.wb.dominantCast==='none'? 'no cast'
+    : ('cast '+q.wb.dominantCast+' '+q.wb.castPct.toFixed(0)+'%');
+  const adv=window.qcAdvice(q);
+  const ea=document.getElementById('qc-exp-act'), wa=document.getElementById('qc-wb-act');
+  ea.textContent = q.verdict.exposure==='PASS'? '' : '→ '+adv.exposure;
+  ea.className='qc-action '+(q.verdict.exposure==='FAIL'?'bad':q.verdict.exposure==='CHECK'?'warn':'');
+  wa.textContent = (q.verdict.whiteBalance==='PASS'||q.verdict.whiteBalance==='N/A')? '' : '→ '+adv.whiteBalance;
+  wa.className='qc-action '+(q.verdict.whiteBalance==='FAIL'?'bad':q.verdict.whiteBalance==='CHECK'?'warn':'');
+}
+
+function analyse(data, frozenMs){
+  const N=PW*PH; const gray=new Float32Array(N);
+  for(let i=0,j=0;i<N;i++,j+=4) gray[i]=0.299*data[j]+0.587*data[j+1]+0.114*data[j+2];
+  const cols=24, rows=Math.round(cols*PH/PW), nB=cols*rows;
+  const sum=new Float32Array(nB), cnt=new Int32Array(nB);
+  let lumaSum=0, moved=0, tot=0;
+  for(let y=0;y<PH;y++){ const by=Math.min(rows-1,(y*rows/PH)|0);
+    for(let x=0;x<PW;x++){ const idx=y*PW+x, g=gray[idx];
+      sum[by*cols+Math.min(cols-1,(x*cols/PW)|0)]+=g; cnt[by*cols+Math.min(cols-1,(x*cols/PW)|0)]++;
+      lumaSum+=g; if(prevGray){ if(Math.abs(g-prevGray[idx])>2) moved++; tot++; } } }
+  const luma=lumaSum/N, moving=tot?moved/tot:1;
+  const cur=new Float32Array(nB); for(let b=0;b<nB;b++) cur[b]=cnt[b]?sum[b]/cnt[b]:0;
+  let frac=0;
+  if(!ref||ref.length!==nB){ ref=cur; } else {
+    let changed=0; for(let b=0;b<nB;b++){ if(Math.abs(cur[b]-ref[b])>18) changed++; if(!on) ref[b]+=0.04*(cur[b]-ref[b]); }
+    frac=changed/nB;
+  }
+  if(!prevGray) prevGray=new Float32Array(N); prevGray.set(gray);
+  fracA=fracA==null?frac:fracA+0.4*(frac-fracA);
+  movA=movA==null?moving:movA+0.4*(moving-movA);
+  const now=performance.now(), dt=now-(analyse._t||now); analyse._t=now;
+  const base=baseFlick??movA??0.01, thr=Math.max(0.0004,base*0.2);
+  if(movA<thr) stillMs+=dt; else stillMs=0;
+  if(!on && movA>thr*2) baseFlick=baseFlick==null?movA:baseFlick+0.01*(movA-baseFlick);
+  let raw=null;
+  if(luma<16) raw='NO SIGNAL'; else if(frozenMs>1500) raw='FROZEN'; else if(fracA>=0.45) raw='CHANGE';
+  if(raw){ badSince=badSince??now; goodSince=null; } else { goodSince=goodSince??now; badSince=null; }
+  if(!on && raw && now-badSince>=250){ on=true; reason=raw; onSince=now; }
+  else if(on && raw && raw!==reason && now-badSince>=250){ reason=raw; }
+  else if(on && !raw && goodSince && now-goodSince>=600 && now-onSince>=1500){ on=false; reason=null; }
+  document.getElementById('pct').textContent=Math.round((fracA||0)*100);
+  setState(on?reason:'LIVE', on);
+}
+function setState(txt,bad){ const s=document.getElementById('state'); s.textContent=txt; s.className='st '+(bad?'bad':'ok');
+  document.getElementById('stage').classList.toggle('alert',!!bad); }
+
+let silenceMs=0, lastAudioT=0;
+function onAudio(a){
+  const now=performance.now(), dt=lastAudioT?now-lastAudioT:0; lastAudioT=now;
+  const rms=(a.momentary==null?-120:a.momentary), peak=(a.peak==null?-120:a.peak), ch=a.channels||[];
+  document.getElementById('db').textContent=rms.toFixed(0)+' dB';
+  document.getElementById('vu').style.width=Math.max(0,Math.min(100,(rms+60)/60*100)).toFixed(0)+'%';
+  if(rms<-55) silenceMs+=dt; else silenceMs=0;
+  const dead = ch.length>=2 && (Math.max(...ch)-Math.min(...ch))>25 && Math.min(...ch)<-55;
+  let state='PASS', detail='', cls='pass';
+  if(silenceMs>1500){ state='FAIL'; detail='NO AUDIO'; cls='fail'; }
+  else if(peak>-1){ state='FAIL'; detail='CLIP '+peak.toFixed(0)+' dBFS'; cls='fail'; }
+  else if(dead){ state='FAIL'; detail='DEAD CHANNEL'; cls='fail'; }
+  else if(rms<-40){ state='CHECK'; detail='low level'; cls='check'; }
+  else { detail = ch.length>=2 ? 'stereo ok' : (ch.length===1?'mono':''); }
+  const b=document.getElementById('aud-badge'); b.textContent=state; b.className='qc-badge '+cls;
+  document.getElementById('aud-detail').textContent = detail + (ch.length>=2 ? (' · L '+ch[0].toFixed(0)+' R '+ch[1].toFixed(0)) : '');
+}
+
+// ---------- line-up drift (OpenCV, lazy + throttled) on the clean ingest frame ----------
+const TOL_TRANS=6, TOL_ROT=0.4, TOL_ZOOM=1.5, HARD_TRANS=25, HARD_ROT=2, HARD_ZOOM=6, MIN_MATCHES=12;
+let CV=null, cvState='idle', lockRef=null, matcher=null;
+const driftEl=document.getElementById('drift');
+let cvEmpty=null; const emptyMask=()=>{ if(!cvEmpty) cvEmpty=new CV.Mat(); return cvEmpty; };
+const makeORB=()=>{ try{return new CV.ORB(800);}catch(e){try{return CV.ORB_create(800);}catch(_){return new CV.ORB();}} };
+function loadCV(){ if(cvState==='ready'||cvState==='loading')return; cvState='loading';
+  const s=document.createElement('script'); s.async=true; s.src=window.ingestAPI?'opencv.js':'https://docs.opencv.org/4.10.0/opencv.js';
+  s.onload=async()=>{ try{ let m=window.CV; if(m&&typeof m.then==='function')m=await m;
+    if(m&&m.getBuildInformation){CV=m;cvState='ready';} else if(m){m.onRuntimeInitialized=()=>{CV=m;cvState='ready';};} else cvState='failed'; }catch(e){cvState='failed';} };
+  s.onerror=()=>{cvState='failed';}; document.head.appendChild(s); }
+function grayMat(){ if(!CV||!lastRGBA) return null;
+  const tmp=document.createElement('canvas'); tmp.width=PW; tmp.height=PH; const tc=tmp.getContext('2d');
+  const big=document.createElement('canvas'); big.width=lastRGBA.w; big.height=lastRGBA.h;
+  big.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(lastRGBA.arr),lastRGBA.w,lastRGBA.h),0,0);
+  tc.drawImage(big,0,0,PW,PH);
+  const src=CV.matFromImageData(tc.getImageData(0,0,PW,PH));
+  const g=new CV.Mat(); CV.cvtColor(src,g,CV.COLOR_RGBA2GRAY); src.delete(); return g; }
+document.getElementById('lock-btn').onclick=()=>{
+  if(lockRef){ try{lockRef.kp.delete();lockRef.des.delete();}catch(e){} lockRef=null;
+    document.getElementById('lock-btn').textContent='Lock line-up'; driftEl.textContent=''; return; }
+  if(cvState!=='ready'){ loadCV(); driftEl.textContent='loading vision…';
+    const w=setInterval(()=>{ if(cvState==='ready'){clearInterval(w);doLock();} else if(cvState==='failed'){clearInterval(w);driftEl.textContent='vision unavailable';} },200); return; }
+  doLock(); };
+function doLock(){ const g=grayMat(); if(!g){ driftEl.textContent='no frame'; return; }
+  try{ const orb=makeORB(),kp=new CV.KeyPointVector(),des=new CV.Mat(); orb.detectAndCompute(g,emptyMask(),kp,des); orb.delete();
+    if(kp.size()<MIN_MATCHES){ kp.delete();des.delete();g.delete(); driftEl.textContent='too few features — reframe'; driftEl.style.color='#ff5a5f'; return; }
+    lockRef={kp,des}; g.delete(); document.getElementById('lock-btn').textContent='Locked ✓'; driftEl.textContent='GOOD · locked'; driftEl.style.color='#4ec9b0';
+  }catch(e){ try{g.delete();}catch(_){} driftEl.textContent='lock failed'; } }
+function setDrift(cls,txt){ driftEl.textContent=txt; driftEl.style.color=cls==='good'?'#4ec9b0':cls==='check'?'#c58a1a':'#ff5a5f'; }
+function measureDrift(){ if(!CV||!lockRef) return; const g=grayMat(); if(!g) return;
+  let kp2=null,des2=null,src=null,dst=null,H=null,mask=null;
+  try{ const orb=makeORB(); kp2=new CV.KeyPointVector(); des2=new CV.Mat(); orb.detectAndCompute(g,emptyMask(),kp2,des2); orb.delete();
+    if(kp2.size()<MIN_MATCHES){ setDrift('bad','LOW MATCH'); return; }
+    if(!matcher) matcher=new CV.BFMatcher(CV.NORM_HAMMING,false);
+    const knn=new CV.DMatchVectorVector(); matcher.knnMatch(lockRef.des,des2,knn,2); const gm=[];
+    for(let i=0;i<knn.size();i++){ const mm=knn.get(i); if(mm.size()<2)continue; const a=mm.get(0),b=mm.get(1); if(a.distance<0.75*b.distance)gm.push(a); }
+    knn.delete(); if(gm.length<MIN_MATCHES){ setDrift('bad','LOW MATCH ('+gm.length+')'); return; }
+    const sp=[],dp=[]; for(const mm of gm){ const p1=lockRef.kp.get(mm.queryIdx).pt,p2=kp2.get(mm.trainIdx).pt; sp.push(p1.x,p1.y);dp.push(p2.x,p2.y); }
+    src=CV.matFromArray(gm.length,1,CV.CV_32FC2,sp); dst=CV.matFromArray(gm.length,1,CV.CV_32FC2,dp);
+    mask=new CV.Mat(); H=CV.findHomography(src,dst,CV.RANSAC,4.0,mask); if(H.empty()){ setDrift('bad','NO FIT'); return; }
+    let inl=0; for(let i=0;i<mask.rows;i++) inl+=mask.data[i]?1:0; if(inl<MIN_MATCHES){ setDrift('bad','LOW MATCH ('+inl+')'); return; }
+    const a=H.doubleAt(0,0),b=H.doubleAt(0,1),c=H.doubleAt(1,0),d=H.doubleAt(1,1);
+    const scale=(Math.hypot(a,c)+Math.hypot(b,d))/2, rot=Math.atan2(c,a)*180/Math.PI, tx=H.doubleAt(0,2),ty=H.doubleAt(1,2), zoom=(scale-1)*100, t=Math.max(Math.abs(tx),Math.abs(ty));
+    let cls='good',st='GOOD'; if(t>HARD_TRANS||Math.abs(rot)>HARD_ROT||Math.abs(zoom)>HARD_ZOOM){cls='bad';st='NOT GOOD';} else if(t>TOL_TRANS||Math.abs(rot)>TOL_ROT||Math.abs(zoom)>TOL_ZOOM){cls='check';st='CHECK';}
+    const parts=[]; if(Math.abs(rot)>0.15)parts.push('ROT '+(rot>0?'L':'R')+' '+Math.abs(rot).toFixed(2)+'°');
+    if(Math.abs(tx)>3)parts.push('PAN '+(tx>0?'L':'R')+' '+Math.abs(tx).toFixed(0)+'px'); if(Math.abs(ty)>3)parts.push('TILT '+(ty>0?'U':'D')+' '+Math.abs(ty).toFixed(0)+'px');
+    if(Math.abs(zoom)>1)parts.push('ZOOM '+(zoom>0?'OUT':'IN')+' '+Math.abs(zoom).toFixed(1)+'%');
+    setDrift(cls, st+(parts.length?(' · '+parts.join(' ')):'')+' · '+inl+'pts');
+  }catch(e){}
+  finally{ [g,kp2,des2,src,dst,H,mask].forEach(m=>{try{m&&m.delete&&m.delete();}catch(_){}}); } }
+setInterval(()=>{ if(cvState==='ready'&&lockRef) measureDrift(); }, 700);
+</script>
