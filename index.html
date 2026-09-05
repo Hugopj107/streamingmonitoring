@@ -1,7 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Stream Change Sentinel — multi-region</title>
+<title>Court Stream Monitor</title>
 <style>
   :root{
     --bg:#0b0e12; --panel:#12161c; --line:#20272f; --ink:#dfe6ee; --dim:#7d8a99;
@@ -80,6 +80,14 @@
 
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:14px}
   .card h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
+  details.card{padding:0}
+  details.card>summary{list-style:none;cursor:pointer;padding:14px;font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--dim);display:flex;align-items:center;gap:8px}
+  details.card>summary::-webkit-details-marker{display:none}
+  details.card>summary::before{content:'▸';color:var(--accent);transition:transform .15s;display:inline-block}
+  details.card[open]>summary::before{transform:rotate(90deg)}
+  details.card>summary:hover{color:var(--ink)}
+  details.card>.dcontent{padding:0 14px 14px}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
 
   /* ---- direct-ingest courts (SRT/RTSP, one ffmpeg per court) ---- */
@@ -115,23 +123,15 @@
 
 <div class="wrap">
   <header>
-    <h1>Stream Change Sentinel <span class="dot">●</span></h1>
-    <span class="sub">multi-region · each box detects independently against its own last-known-good</span>
+    <h1>Court Stream Monitor <span class="dot">●</span></h1>
+    <span class="sub">direct SRT/RTSP per court · each stream detects independently against its own last-known-good</span>
   </header>
 
   <div class="bar">
-    <label class="file">Load video<input id="file" type="file" accept="video/*"></label>
-    <button id="screen">Capture screen / window</button>
-    <button id="add">+ Region</button>
-    <button id="del">− Region</button>
-    <button id="reset">Reset references</button>
     <button id="report">Day report</button>
     <button id="export-finals">Export last match ▾</button>
-    <button id="fullscreen">⛶ Fullscreen</button>
     <button id="ingest-beta" title="Try direct SRT/RTSP ingest (no screen-share)">Direct ingest (single-stream test)</button>
     <button id="jump-tuning" title="Jump to the detection tuning sliders (threshold, sensitivity, freeze timeout…)">⚙ Tuning</button>
-    <span class="chip" id="cap-status"></span>
-    <span class="chip"><span id="fps">0</span> fps</span>
   </div>
 
   <div class="bar" id="natsbar">
@@ -146,23 +146,6 @@
   <div class="bar" id="sheetbar">
     <span class="chip" style="margin-left:0;color:var(--dim)">Auto-logs each match to the streams sheet</span>
     <span class="chip" id="sheet-status">sheet off</span>
-  </div>
-
-  <div class="bar" id="avbar">
-    <span class="chip" style="margin-left:0;color:var(--dim)">Audio</span>
-    <div id="vu"><div id="vu-fill"></div></div>
-    <span class="chip" id="audio-status">no audio</span>
-    <span style="width:14px"></span>
-    <button id="ovl-toggle">Alignment overlay: off</button>
-    <label class="chip" style="color:var(--dim)">opacity <input id="ovl-op" type="range" min="10" max="100" value="55" style="vertical-align:middle;width:90px;accent-color:var(--accent)"></label>
-    <button id="ovl-img">Load overlay image…</button>
-    <button id="ovl-clear" style="display:none">Clear image</button>
-  </div>
-
-  <div class="stage" id="stage">
-    <video id="vid" muted playsinline></video>
-    <img id="stage-overlay" alt="">
-    <div class="placeholder" id="ph">Load a video or capture your monitoring window, then drag each box onto a court.</div>
   </div>
 
   <div class="card">
@@ -224,6 +207,39 @@
       </div>
     </div>
   </div>
+
+  <details class="card">
+    <summary>Option B — screen-capture / video file</summary>
+    <div class="dcontent">
+      <div class="bar" style="margin-top:2px">
+        <label class="file">Load video<input id="file" type="file" accept="video/*"></label>
+        <button id="screen">Capture screen / window</button>
+        <button id="add">+ Region</button>
+        <button id="del">− Region</button>
+        <button id="reset">Reset references</button>
+        <button id="fullscreen">⛶ Fullscreen</button>
+        <span class="chip" id="cap-status"></span>
+        <span class="chip"><span id="fps">0</span> fps</span>
+      </div>
+
+      <div class="bar" id="avbar">
+        <span class="chip" style="margin-left:0;color:var(--dim)">Audio</span>
+        <div id="vu"><div id="vu-fill"></div></div>
+        <span class="chip" id="audio-status">no audio</span>
+        <span style="width:14px"></span>
+        <button id="ovl-toggle">Alignment overlay: off</button>
+        <label class="chip" style="color:var(--dim)">opacity <input id="ovl-op" type="range" min="10" max="100" value="55" style="vertical-align:middle;width:90px;accent-color:var(--accent)"></label>
+        <button id="ovl-img">Load overlay image…</button>
+        <button id="ovl-clear" style="display:none">Clear image</button>
+      </div>
+
+      <div class="stage" id="stage">
+        <video id="vid" muted playsinline></video>
+        <img id="stage-overlay" alt="">
+        <div class="placeholder" id="ph">Load a video or capture your monitoring window, then drag each box onto a court.</div>
+      </div>
+    </div>
+  </details>
 </div>
 
 <script src="qc.js"></script>
