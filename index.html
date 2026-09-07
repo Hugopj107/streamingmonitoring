@@ -788,6 +788,7 @@ function addIngestCourt(initial){
     </div>
     <div class="istatus">
       <span class="st ok istate" title="">WAITING</span>
+      <span class="chip ifps" title="Detection frames/sec actually being received (target 8fps) — a low number means network jitter or the machine is overloaded">—</span>
       <span class="chip">Δ<span class="ipct">0</span>%</span>
     </div>
     <div class="ibadges">
@@ -816,6 +817,7 @@ function addIngestCourt(initial){
     listenBtn:el.querySelector('.listen'), gridBtn:el.querySelector('.igridtoggle'),
     lockBtn:el.querySelector('.ilock'), fsBtn:el.querySelector('.ifs'), rmBtn:el.querySelector('.irm'),
     stageEl:el.querySelector('.istage'), stateEl:el.querySelector('.istate'), pctEl:el.querySelector('.ipct'),
+    fpsEl:el.querySelector('.ifps'), frames:0, fpsAvg:0, lastFpsTick:0,
     placeholderEl:el.querySelector('.placeholder'),
     expBadge:el.querySelector('.iexp'), wbBadge:el.querySelector('.iwb'), audBadge:el.querySelector('.iaud'),
     lineupBadge:el.querySelector('.ilineup'), outlierEl:el.querySelector('.outlier'),
@@ -863,12 +865,19 @@ function addIngestCourt(initial){
     ic.pctEl.textContent=Math.round((ic.fracA||0)*100);
     setIngestState(ic, ic.on?ic.reason:'LIVE', ic.on);
     if(now-ic.lastQCAt>700){ ic.lastQCAt=now; runIngestQC(ic, arr, w, h); }
+    // detection frames/sec actually arriving — target is 8fps (ingest.js downsamples every
+    // stream to that); a sustained dip below it means network jitter or an overloaded machine
+    ic.frames++;
+    if(!ic.lastFpsTick) ic.lastFpsTick=now;
+    else if(now-ic.lastFpsTick>=1000){ ic.fpsAvg=ic.frames*1000/(now-ic.lastFpsTick); ic.frames=0; ic.lastFpsTick=now;
+      ic.fpsEl.textContent=ic.fpsAvg.toFixed(1)+'fps'; ic.fpsEl.style.color = ic.fpsAvg<6 ? 'var(--warn)' : ic.fpsAvg<7 ? '#c58a1a' : ''; }
   };
 
   ic.startBtn.onclick=()=>{
     const u=ic.urlInput.value.trim(); if(!u) return;
     ic.ref=null; ic.prevGray=null; ic.stillMs=0; ic.fracA=ic.movA=ic.baseFlick=null;
     ic.on=false; ic.reason=null; ic.lastQC=null; ic.lastLog=null;
+    ic.frames=0; ic.fpsAvg=0; ic.lastFpsTick=0; ic.fpsEl.textContent='—'; ic.fpsEl.style.color='';
     ic.placeholderEl.style.display='none'; setIngestState(ic,'CONNECTING…',false);
     window.ingestAPI.start(feedKey,u);
     ic.running=true; ic.startBtn.disabled=true; ic.stopBtn.disabled=false; ic.listenBtn.disabled=false;
@@ -886,6 +895,7 @@ function addIngestCourt(initial){
     ic.running=false; ic.startBtn.disabled=false; ic.stopBtn.disabled=true; ic.listenBtn.disabled=true;
     ic.lockBtn.disabled=true;
     ic.urlInput.disabled=false;
+    ic.fpsEl.textContent='—'; ic.fpsEl.style.color='';
     ic.placeholderEl.textContent='not started'; ic.placeholderEl.style.display='flex';
     setIngestState(ic,'STOPPED',false);
     if(wasListening && autoCycleOn) autoCycleTick();   // ic.running is false now, so it won't be re-picked
