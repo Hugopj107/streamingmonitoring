@@ -104,10 +104,17 @@
   .igrid-ovl.on{display:block}
   .ibar{display:flex;gap:6px;margin:10px 0 8px}
   .ibar button{padding:6px 11px;font-size:11px}
-  .listen.on,.igridtoggle.on,.ilock.locked,.ifs.on,#auto-cycle.on{border-color:var(--accent);color:var(--accent)}
+  .listen.on,.igridtoggle.on,.ilock.locked,.ifs.on,#auto-cycle.on,#max-all.on{border-color:var(--accent);color:var(--accent)}
   .icard:fullscreen{width:100vw;height:100vh;max-width:none;background:var(--bg);border:none;border-radius:0;
     display:flex;flex-direction:column;padding:28px;gap:10px}
   .icard:fullscreen .istage{flex:1;min-height:0;aspect-ratio:auto}
+  /* "Max all courts" — fullscreens #ingest-grid itself; JS sets grid-template-columns to fit
+     however many courts are added, and each card compacts the same way a single fullscreened
+     tile does (flex column, video takes remaining height) so nothing overflows its cell. */
+  #ingest-grid:fullscreen{width:100vw;height:100vh;background:var(--bg);padding:16px;gap:10px;
+    grid-auto-rows:1fr;align-content:stretch;overflow:auto}
+  #ingest-grid:fullscreen .icard{display:flex;flex-direction:column;min-height:0;height:100%}
+  #ingest-grid:fullscreen .istage{flex:1;min-height:0;aspect-ratio:auto}
   .istatus{display:flex;align-items:center;gap:10px;font-size:11px;margin-bottom:8px}
   .istatus .chip{margin-left:0}
   .st{padding:2px 7px;border-radius:4px;display:inline-block;font-size:10px;letter-spacing:.08em;cursor:default}
@@ -158,6 +165,7 @@
     <div class="bar" style="margin-bottom:12px">
       <button id="add-ingest">+ Add SRT court</button>
       <button id="auto-cycle" title="Automatically switch which court's audio plays, rotating every ~60s through all running courts">🔀 Auto-cycle audio</button>
+      <button id="max-all" title="Full screen every court at once, split-screen">⛶ Max all courts</button>
       <span class="chip" id="ingest-ff"></span>
     </div>
     <div class="igrid" id="ingest-grid"></div>
@@ -637,6 +645,22 @@ document.addEventListener('fullscreenchange',()=>{
 // currently fullscreened rather than each tile registering its own
 document.addEventListener('fullscreenchange',()=>{
   ingestCourts.forEach(c=>{ if(c.fsBtn) c.fsBtn.classList.toggle('on', document.fullscreenElement===c.el); });
+});
+// "Max all courts" — fullscreens #ingest-grid itself (every tile at once, split-screen) rather
+// than any one tile. Every control on every tile (Stop/Listen/Grid/Lock/fps/badges) stays live,
+// same as single-tile fullscreen - this is that same idea applied to the whole set.
+document.getElementById('max-all').onclick=()=>{
+  const grid=document.getElementById('ingest-grid');
+  if(document.fullscreenElement===grid){ document.exitFullscreen(); return; }
+  const n=ingestCourts.length; if(!n) return;
+  const cols=Math.max(1, Math.round(Math.sqrt(n*16/9)));   // mild widescreen bias — most monitors are wider than tall
+  grid.style.gridTemplateColumns='repeat('+cols+',1fr)';
+  grid.requestFullscreen && grid.requestFullscreen().catch(()=>{});
+};
+document.addEventListener('fullscreenchange',()=>{
+  const grid=document.getElementById('ingest-grid'), on=document.fullscreenElement===grid;
+  document.getElementById('max-all').classList.toggle('on', on);
+  if(!on) grid.style.gridTemplateColumns='';   // hand layout back to the normal auto-fill CSS
 });
 
 // Manually finalise a court's current (un-rolled) match — for end of day, when no next
