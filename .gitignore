@@ -2,3 +2,6 @@ node_modules/
 dist/
 *.log
 service-account.json
+# fetched at build time by scripts/fetch-ffmpeg.js (repo is public - keep the ~90MB SRT-enabled
+# ffmpeg binary out of it; see README for why)
+bin/

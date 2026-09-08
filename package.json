@@ -9,8 +9,9 @@
   },
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win portable",
-    "dist:installer": "electron-builder --win nsis"
+    "fetch:ffmpeg": "node scripts/fetch-ffmpeg.js",
+    "dist": "npm run fetch:ffmpeg && electron-builder --win portable",
+    "dist:installer": "npm run fetch:ffmpeg && electron-builder --win nsis"
   },
   "devDependencies": {
     "electron": "^31.0.0",
@@ -20,7 +21,7 @@
     "appId": "com.bolt6.streamsentinel",
     "productName": "Stream Sentinel",
     "files": ["main.js", "preload.js", "index.html", "nats-ingest.js", "sheets.js", "opencv.js", "ingest.js", "ingest-test.html", "qc.js", "assets/**/*", "node_modules/**/*"],
-    "extraResources": ["service-account.json"],
+    "extraResources": ["service-account.json", { "from": "bin/win/ffmpeg.exe", "to": "ffmpeg.exe" }],
     "win": {
       "target": "portable"
     },

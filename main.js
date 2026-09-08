@@ -6,11 +6,22 @@ const sheets = require('./sheets');
 const ingest = require('./ingest');
 let mainWin = null;
 
-// ffmpeg for direct ingest: prefer a binary shipped next to the app (drop an SRT-enabled
-// build here — e.g. BtbN), else fall back to system PATH.
+// ffmpeg for direct ingest: an SRT-enabled build (BtbN gpl full — plain ffmpeg builds don't
+// speak SRT) is bundled via electron-builder's extraResources, so a packaged app needs zero
+// setup on the target machine. Checked in priority order:
+//   1. process.resourcesPath — the packaged app's bundled resources/ffmpeg.exe (always
+//      preferred when present; this is the zero-setup path).
+//   2. bin/<platform>/ffmpeg.exe next to the project — where scripts/fetch-ffmpeg.js puts it
+//      for `npm start` dev-mode testing (process.resourcesPath doesn't point at the project
+//      folder in dev mode, it points inside node_modules/electron, so it won't find it there).
+//   3. a binary dropped directly in the app folder (legacy/manual override).
+//   4. system PATH, as a last resort.
 function resolveFfmpeg(){
-  const names = process.platform === 'win32' ? ['ffmpeg.exe'] : ['ffmpeg'];
-  for (const d of [process.resourcesPath || __dirname, __dirname])
+  const win = process.platform === 'win32';
+  const names = win ? ['ffmpeg.exe'] : ['ffmpeg'];
+  const platDir = win ? 'win' : process.platform === 'darwin' ? 'mac' : 'linux';
+  const dirs = [process.resourcesPath || __dirname, path.join(__dirname, 'bin', platDir), __dirname];
+  for (const d of dirs)
     for (const n of names) { const p = path.join(d, n); try { if (fs.existsSync(p)) return p; } catch (e) {} }
   return names[0];   // system PATH
 }
