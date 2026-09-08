@@ -303,9 +303,9 @@ function beep(freq,count,gap){
     osc.start(t); osc.stop(t+0.15);
   }
 }
-function alarmFeedLoss(){ beep(880,10,0.15); }    // picture frozen/black/gone — the most urgent
-function alarmSoundLoss(){ beep(660,10,0.18); }   // audio dead/clipping — picture's still fine
-function alarmLineup(){ beep(440,5,0.2); }        // camera nudged — informational, least urgent
+function alarmFeedLoss(){ beep(880,20,0.15); }    // picture frozen/black/gone — the most urgent
+function alarmSoundLoss(){ beep(660,20,0.18); }   // audio dead/clipping — picture's still fine
+function alarmLineup(){ beep(440,10,0.2); }       // camera nudged — informational, least urgent
 { const btn=document.getElementById('alarm-toggle');
   const applyAlarmBtn=()=>{ btn.classList.toggle('on',alarmOn); btn.classList.toggle('muted',!alarmOn);
     btn.textContent = alarmOn ? '🔔 Alarms' : '🔕 Alarms muted'; };
