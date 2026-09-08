@@ -93,6 +93,11 @@
   /* ---- direct-ingest courts (SRT/RTSP, one ffmpeg per court) ---- */
   .igrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
   .icard{margin-top:0}
+  .inick{display:block;width:100%;background:transparent;border:1px solid transparent;color:var(--ink);
+    font-family:var(--mono);font-size:13px;font-weight:600;padding:3px 5px;border-radius:4px;margin-bottom:2px}
+  .inick:hover{border-color:var(--line)}
+  .inick:focus{outline:none;border-color:var(--accent);background:#0b0e12}
+  .inick::placeholder{color:var(--dim);font-weight:400}
   .ihead{display:flex;gap:8px;margin-bottom:10px;align-items:center}
   .iurl{flex:1;min-width:0;background:#0b0e12;border:1px solid var(--line);color:var(--ink);
     padding:7px 10px;border-radius:6px;font-family:var(--mono);font-size:11px}
@@ -791,6 +796,7 @@ function addIngestCourt(initial){
   const feedKey='ic-'+Math.random().toString(36).slice(2,9);
   const el=document.createElement('div'); el.className='card icard';
   el.innerHTML=`
+    <input class="inick" placeholder="Name this court (e.g. Center Court)…" autocomplete="off" title="A friendly name for this tile — just for identifying it, doesn't affect court assignment or logging">
     <div class="iname"></div>
     <div class="ihead">
       <input class="iurl" placeholder="srt://host:port?passphrase=…  or  rtsp://…" autocomplete="off">
@@ -836,6 +842,7 @@ function addIngestCourt(initial){
   const gridOvlEl=el.querySelector('.igrid-ovl');
   const ic={
     id:nextIngestId++, feedKey, el,
+    nickInput:el.querySelector('.inick'),
     urlInput:el.querySelector('.iurl'), sel:el.querySelector('.assign'), nm:el.querySelector('.iname'),
     startBtn:el.querySelector('.istart'), stopBtn:el.querySelector('.istop'),
     listenBtn:el.querySelector('.listen'), gridBtn:el.querySelector('.igridtoggle'),
@@ -857,8 +864,9 @@ function addIngestCourt(initial){
   ic.court='SRT '+ic.id; ic.nm.textContent=ic.court;
   ingestCourts.push(ic);
   fillSelect(ic);
-  if(initial) ic.urlInput.value=initial.url||'';
+  if(initial){ ic.urlInput.value=initial.url||''; ic.nickInput.value=initial.name||''; }
 
+  ic.nickInput.oninput=saveIngestConfig;
   ic.sel.onchange=()=>assignCourt(ic, ic.sel.value, 'SRT '+ic.id);
   ic.expBadge.onclick=()=>setIngestView(ic,'false');
   ic.wbBadge.onclick=()=>setIngestView(ic,'rgb');
@@ -1037,7 +1045,7 @@ function saveIngestConfig(){
   clearTimeout(ingestSaveTimer);
   ingestSaveTimer=setTimeout(()=>{
     if(!window.configStore) return;
-    const courts=ingestCourts.map(ic=>({url:ic.urlInput.value.trim()}));
+    const courts=ingestCourts.map(ic=>({url:ic.urlInput.value.trim(), name:ic.nickInput.value.trim()}));
     window.configStore.set({ingestGrid:{courts}});
   },400);
 }
@@ -1382,7 +1390,7 @@ function measureIngestDrift(ic){
     if(Math.abs(zoom)>1) parts.push('ZOOM '+(zoom>0?'OUT':'IN')+' '+Math.abs(zoom).toFixed(1)+'%');
     setIngestDrift(ic, cls, st+(parts.length?(' · '+parts.join(' ')):'')+' · '+inl+' pts');
     if(st==='NOT GOOD' && (!ic.driftNotified || Date.now()-ic.driftNotified>20000)){ ic.driftNotified=Date.now();
-      notifyDrift(ic.court, st, parts.join(' ')); }
+      notifyDrift(ic.nickInput.value.trim()||ic.court, st, parts.join(' ')); }
     if(st!=='NOT GOOD') ic.driftNotified=0;
   }catch(e){ /* transient — ignore */ }
   finally{ [gray,kp2,des2,src,dst,H,mask].forEach(m=>{ try{ m&&m.delete&&m.delete(); }catch(_){} }); }
