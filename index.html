@@ -109,7 +109,8 @@
   .igrid-ovl.on{display:block}
   .ibar{display:flex;gap:6px;margin:10px 0 8px}
   .ibar button{padding:6px 11px;font-size:11px}
-  .listen.on,.igridtoggle.on,.ilock.locked,.ifs.on,#auto-cycle.on,#max-all.on{border-color:var(--accent);color:var(--accent)}
+  .listen.on,.igridtoggle.on,.ilock.locked,.ifs.on,#auto-cycle.on,#max-all.on,#alarm-toggle.on{border-color:var(--accent);color:var(--accent)}
+  #alarm-toggle.muted{opacity:.5;color:var(--dim)}
   .icard:fullscreen{width:100vw;height:100vh;max-width:none;background:var(--bg);border:none;border-radius:0;
     display:flex;flex-direction:column;padding:28px;gap:10px}
   .icard:fullscreen .istage{flex:1;min-height:0;aspect-ratio:auto}
@@ -149,6 +150,7 @@
     <button id="export-finals">Export last match ▾</button>
     <button id="ingest-beta" title="Try direct SRT/RTSP ingest (no screen-share)">Direct ingest (single-stream test)</button>
     <button id="jump-tuning" title="Jump to the detection tuning sliders (threshold, sensitivity, freeze timeout…)">⚙ Tuning</button>
+    <button id="alarm-toggle" title="Audible alarm for feed loss, line-up drift, and audio loss — click to mute">🔔 Alarms</button>
   </div>
 
   <div class="bar" id="natsbar">
@@ -280,6 +282,38 @@ S('freeze','freeze',v=>v/10,v=>v.toFixed(1));
 S('ffrac','freezeRel',v=>v/100,v=>Math.round(v*100)+'%');
 S('exit','exit',v=>v/10,v=>v.toFixed(1));
 S('rebase','rebase',v=>v,v=>v);
+
+// ---- audible alarm: feed loss, line-up drift, audio loss (deliberately NOT for CHANGE or
+// QC exposure/white-balance — those are lower-stakes and would make this noisy) ----
+let alarmOn=true, alarmCtx=null;
+function ensureAlarmCtx(){ if(!alarmCtx){ try{ alarmCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
+  if(alarmCtx && alarmCtx.state==='suspended') alarmCtx.resume(); return alarmCtx; }
+function beep(freq,count,gap){
+  if(!alarmOn) return;
+  const ctx=ensureAlarmCtx(); if(!ctx) return;
+  count=count||1; gap=gap==null?0.16:gap;
+  for(let i=0;i<count;i++){
+    const t=ctx.currentTime+i*gap;
+    const osc=ctx.createOscillator(), gain=ctx.createGain();
+    osc.type='sine'; osc.frequency.value=freq;
+    gain.gain.setValueAtTime(0,t);
+    gain.gain.linearRampToValueAtTime(0.28,t+0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001,t+0.13);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(t); osc.stop(t+0.15);
+  }
+}
+function alarmFeedLoss(){ beep(880,2,0.15); }     // picture frozen/black/gone — the most urgent
+function alarmSoundLoss(){ beep(660,2,0.18); }    // audio dead/clipping — picture's still fine
+function alarmLineup(){ beep(440,1,0); }          // camera nudged — informational, least urgent
+{ const btn=document.getElementById('alarm-toggle');
+  const applyAlarmBtn=()=>{ btn.classList.toggle('on',alarmOn); btn.classList.toggle('muted',!alarmOn);
+    btn.textContent = alarmOn ? '🔔 Alarms' : '🔕 Alarms muted'; };
+  btn.onclick=()=>{ alarmOn=!alarmOn; ensureAlarmCtx(); applyAlarmBtn();
+    if(window.configStore) window.configStore.set({alarmOn}); };
+  applyAlarmBtn();
+  if(window.configStore) window.configStore.get().then(cfg=>{ if(cfg && cfg.alarmOn===false){ alarmOn=false; applyAlarmBtn(); } });
+}
 
 // ---- processing buffer ----
 const PW=320; let PH=180;
@@ -413,7 +447,8 @@ function evaluateRegion(r, frac, moving, luma, dt, now, captureStalled, havePrev
   // latching state machine: raise after ENTER_MS, hold min P.hold, release after P.exit clear
   if(raw){ r.badSince = r.badSince ?? now; r.goodSince=null; }
   else   { r.goodSince = r.goodSince ?? now; r.badSince=null; }
-  if(!r.on && raw && now-r.badSince>=ENTER_MS){ r.on=true; r.reason=raw; r.onSince=now; }
+  if(!r.on && raw && now-r.badSince>=ENTER_MS){ r.on=true; r.reason=raw; r.onSince=now;
+    if(raw==='FROZEN'||raw==='NO SIGNAL') alarmFeedLoss(); }
   else if(r.on && raw && raw!==r.reason && now-r.badSince>=ENTER_MS){ r.reason=raw; }
   else if(r.on && !raw && r.goodSince!=null
           && now-r.goodSince>=P.exit*1000 && now-r.onSince>=P.hold*1000){ r.on=false; r.reason=null; }
@@ -457,10 +492,13 @@ function step(){
   }
 }
 // watchdog: if frames stop arriving entirely, flash every region and zero the fps
+let captureNoFramesAlarmed=false;
 setInterval(()=>{
   if(!started) return;
   if(performance.now()-lastFrame>800){ fpsEl.textContent='0';
+    if(!captureNoFramesAlarmed){ captureNoFramesAlarmed=true; alarmFeedLoss(); }
     regions.forEach(r=>{ if(!r.dragging){ r.el.classList.add('alert'); r.tag.textContent='NO FRAMES'; } }); }
+  else captureNoFramesAlarmed=false;
 },300);
 
 // ---- sources ----
@@ -855,7 +893,7 @@ function addIngestCourt(initial){
     cx, off, ox, raw, lockRef:null, driftNotified:0,
     x:0,y:0,w:1,h:1, ref:null, running:false,
     on:false, reason:null, badSince:null, goodSince:null, onSince:0, stillMs:0, fracA:null, movA:null, baseFlick:null,
-    lastLog:null, court:null, courtKey:null, _t:0,
+    lastLog:null, court:null, courtKey:null, _t:0, noFramesAlarmed:false, audState:null,
     grayBuf:new Float32Array(PW*PH), prevGray:null,
     silenceMs:0, lastAudioT:0,
     qcStab: window.QCStabilizer ? new window.QCStabilizer() : null, lastQCAt:0, lastQC:null,
@@ -879,6 +917,7 @@ function addIngestCourt(initial){
   };
 
   ic.onFrame=({w,h,buf,frozenMs})=>{
+    ic.noFramesAlarmed=false;   // a real frame just arrived — NO FRAMES is over, if it was on
     const arr=new Uint8ClampedArray(buf.buffer||buf);
     rx.putImageData(new ImageData(arr,w,h),0,0);
     if(ic.view==='normal') cx.putImageData(new ImageData(arr,w,h),0,0);
@@ -910,6 +949,7 @@ function addIngestCourt(initial){
     ic.ref=null; ic.prevGray=null; ic.stillMs=0; ic.fracA=ic.movA=ic.baseFlick=null;
     ic.on=false; ic.reason=null; ic.lastQC=null; ic.lastLog=null;
     ic.frames=0; ic.fpsAvg=0; ic.lastFpsTick=0; ic.fpsEl.textContent='—'; ic.fpsEl.style.color='';
+    ic.noFramesAlarmed=false; ic.audState=null;
     ic.placeholderEl.style.display='none'; setIngestState(ic,'CONNECTING…',false);
     window.ingestAPI.start(feedKey,u);
     ic.running=true; ic.startBtn.disabled=true; ic.stopBtn.disabled=false; ic.listenBtn.disabled=false;
@@ -972,6 +1012,8 @@ function onIngestAudio(ic,a){
   else if(peak>-1) state='FAIL';
   else if(dead) state='FAIL';
   else if(rms<-40) state='CHECK';
+  if(state==='FAIL' && ic.audState!=='FAIL') alarmSoundLoss();
+  ic.audState=state;
   badgeIngest(ic.audBadge,'AUD',state);
 }
 
@@ -1056,7 +1098,8 @@ if(window.ingestAPI){
     else { el.textContent='ffmpeg ok · SRT '+(p.srt?'✓':'✗')+' · RTSP '+(p.rtsp?'✓':'✗'); el.style.color=p.srt?'var(--accent)':'#c58a1a'; } });
   window.ingestAPI.onFrame(d=>{ const ic=ingestCourts.find(x=>x.feedKey===d.courtId); if(ic) ic.onFrame(d); });
   window.ingestAPI.onAudio(d=>{ const ic=ingestCourts.find(x=>x.feedKey===d.courtId); if(ic) onIngestAudio(ic,d); });
-  window.ingestAPI.onStatus(d=>{ const ic=ingestCourts.find(x=>x.feedKey===d.courtId); if(ic && d.state==='NO FRAMES') setIngestState(ic,'NO FRAMES',true); });
+  window.ingestAPI.onStatus(d=>{ const ic=ingestCourts.find(x=>x.feedKey===d.courtId);
+    if(ic && d.state==='NO FRAMES'){ if(!ic.noFramesAlarmed){ ic.noFramesAlarmed=true; alarmFeedLoss(); } setIngestState(ic,'NO FRAMES',true); } });
   window.ingestAPI.onPCM(d=>onIngestPCM(d.courtId,d.buf));
   document.getElementById('add-ingest').onclick=()=>{ addIngestCourt(); saveIngestConfig(); };
   document.getElementById('auto-cycle').onclick=()=>{ autoCycleOn ? stopAutoCycle() : startAutoCycle(); };
@@ -1144,11 +1187,11 @@ if(window.sheetsAPI){
 // Ported from tennis_control_room_v8 AudioProcessor: no-audio keyed on PEAK (3s),
 // loudest-25ms-sub-frame metering, adaptive voice threshold, no-speech alert.
 let audioCtx=null, analyser=null, audioBuf=null, elemSrc=null;
-let naSince=null, lastSpoke=0, floorHist=[];
+let naSince=null, lastSpoke=0, floorHist=[], captureAudioFault=false;
 const NOAUDIO_DB=-62, CLIP_DB=-3, SPEAK_MANUAL=-45, SPEAK_MARGIN=9, NOSPEECH_S=90;   // tennis_v8.json
 function ensureCtx(){ if(!audioCtx){ try{ audioCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } return audioCtx; }
 function audioSay(txt,cls){ const el=document.getElementById('audio-status'); if(el){ el.textContent=txt; el.className='chip '+(cls||'ok'); } }
-function resetAudio(){ naSince=null; lastSpoke=performance.now(); floorHist=[]; }
+function resetAudio(){ naSince=null; lastSpoke=performance.now(); floorHist=[]; captureAudioFault=false; }
 function setupAudio(stream){
   const ctx=ensureCtx(); if(!ctx) return;
   const at=stream.getAudioTracks?stream.getAudioTracks():[];
@@ -1184,6 +1227,11 @@ function pollAudio(dt){
   const shown=Math.max(masterDb, peakDb-6);   // peak-biased so brief calls visibly register
   const fill=document.getElementById('vu-fill'); if(fill) fill.style.width=Math.max(0,Math.min(100,(shown+60)/60*100)).toFixed(0)+'%';
   const gap=(now-lastSpoke)/1000;
+  // alarm only for a genuine audio-pipeline fault (NO AUDIO / CLIP) — "no speech" is a content
+  // observation (could just be a quiet moment), not the same kind of technical loss
+  const audioFault = noAudio || peakDb>CLIP_DB;
+  if(audioFault && !captureAudioFault) alarmSoundLoss();
+  captureAudioFault = audioFault;
   if(noAudio)                 audioSay('NO AUDIO','warn');
   else if(peakDb>CLIP_DB)     audioSay('CLIP · '+masterDb.toFixed(0)+' dB','warn');
   else if(gap>NOSPEECH_S)     audioSay('no speech '+Math.floor(gap)+'s','warn');
@@ -1304,7 +1352,7 @@ function measureDrift(r){
     if(Math.abs(zoom)>1) parts.push('ZOOM '+(zoom>0?'OUT':'IN')+' '+Math.abs(zoom).toFixed(1)+'%');
     setDrift(r, cls, st+(parts.length?(' · '+parts.join(' ')):'')+' · '+inl+' pts');
     if(st==='NOT GOOD' && (!r.driftNotified || Date.now()-r.driftNotified>20000)){ r.driftNotified=Date.now();
-      notifyDrift(r.court&&/^Court|·/.test(r.court)?r.court:('CAM '+r.id), st, parts.join(' ')); }
+      notifyDrift(r.court&&/^Court|·/.test(r.court)?r.court:('CAM '+r.id), st, parts.join(' ')); alarmLineup(); }
     if(st!=='NOT GOOD') r.driftNotified=0;
   }catch(e){ /* transient — ignore */ }
   finally{ [gray,kp2,des2,src,dst,H,mask].forEach(m=>{ try{ m&&m.delete&&m.delete(); }catch(_){} }); }
@@ -1390,7 +1438,7 @@ function measureIngestDrift(ic){
     if(Math.abs(zoom)>1) parts.push('ZOOM '+(zoom>0?'OUT':'IN')+' '+Math.abs(zoom).toFixed(1)+'%');
     setIngestDrift(ic, cls, st+(parts.length?(' · '+parts.join(' ')):'')+' · '+inl+' pts');
     if(st==='NOT GOOD' && (!ic.driftNotified || Date.now()-ic.driftNotified>20000)){ ic.driftNotified=Date.now();
-      notifyDrift(ic.nickInput.value.trim()||ic.court, st, parts.join(' ')); }
+      notifyDrift(ic.nickInput.value.trim()||ic.court, st, parts.join(' ')); alarmLineup(); }
     if(st!=='NOT GOOD') ic.driftNotified=0;
   }catch(e){ /* transient — ignore */ }
   finally{ [gray,kp2,des2,src,dst,H,mask].forEach(m=>{ try{ m&&m.delete&&m.delete(); }catch(_){} }); }
