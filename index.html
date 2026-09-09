@@ -226,6 +226,11 @@
         <input id="s-rebase" type="range" min="2" max="30" value="8">
         <div class="hint">If a region stays in CHANGE this long it accepts the current picture as the new normal and clears — the safety net that stops it getting stuck (e.g. when you stop the feed). Only affects CHANGE; FROZEN / NO SIGNAL stay flagged as long as they're real.</div>
       </div>
+      <div class="ctl">
+        <div class="row"><span>Audio-loss timeout</span><span class="val"><span id="v-audloss">5.0</span>s</span></div>
+        <input id="s-audloss" type="range" min="10" max="200" value="50">
+        <div class="hint">How long audio must be continuously silent/dead before it's treated as genuinely lost (worth the alarm), not just a normal gap between points/changeovers. Lower = you hear about it sooner, but more risk of a real pause tripping it; higher = fewer false alarms, slower to catch a real drop.</div>
+      </div>
     </div>
   </div>
 
@@ -269,7 +274,7 @@ const vid=document.getElementById('vid'), stage=document.getElementById('stage')
       ph=document.getElementById('ph'), fpsEl=document.getElementById('fps');
 
 // ---- tunables ----
-const P={trig:0.45, sens:18, gridCols:28, adapt:0.04, hold:1.5, freeze:2.5, exit:0.6, rebase:8, freezeRel:0.2};
+const P={trig:0.45, sens:18, gridCols:28, adapt:0.04, hold:1.5, freeze:2.5, exit:0.6, rebase:8, freezeRel:0.2, audLoss:5};
 const BLACK_LUMA=16;   // black / no-signal floor (mean grey)
 const S=(id,key,fn,show)=>{const s=document.getElementById('s-'+id),o=document.getElementById('v-'+id);
   s.oninput=()=>{P[key]=fn(+s.value); o.textContent=show(P[key]);};};
@@ -282,17 +287,20 @@ S('freeze','freeze',v=>v/10,v=>v.toFixed(1));
 S('ffrac','freezeRel',v=>v/100,v=>Math.round(v*100)+'%');
 S('exit','exit',v=>v/10,v=>v.toFixed(1));
 S('rebase','rebase',v=>v,v=>v);
+S('audloss','audLoss',v=>v/10,v=>v.toFixed(1));
 
 // ---- audible alarm: feed loss, line-up drift, audio loss (deliberately NOT for CHANGE or
 // QC exposure/white-balance — those are lower-stakes and would make this noisy) ----
 // Audio-loss specifically needs a sustained-duration latch, not a raw threshold: live sports
 // audio has real few-second quiet stretches (between points, changeovers) that briefly cross
 // any silence threshold without the feed actually being broken. Require near-silence/dead-
-// channel to hold continuously for AUD_LOST_ENTER_MS before calling it a genuine loss (worth
-// an alarm), and continuous good audio for AUD_LOST_EXIT_MS before it can re-arm — otherwise
-// a single blip of sound during an actually-dead feed would immediately reset and let the very
-// next quiet moment re-fire the alarm.
-const AUD_LOST_ENTER_MS=8000, AUD_LOST_EXIT_MS=2000;
+// channel to hold continuously for P.audLoss seconds (Tuning panel — "Audio-loss timeout",
+// live-adjustable, no restart needed) before calling it a genuine loss worth an alarm, and
+// continuous good audio for AUD_LOST_EXIT_MS before it can re-arm — otherwise a single blip of
+// sound during an actually-dead feed would immediately reset and let the very next quiet moment
+// re-fire the alarm. Exit isn't exposed in Tuning — 2s is enough headroom against flicker
+// regardless of how the entry timeout is set.
+const AUD_LOST_EXIT_MS=2000;
 let alarmOn=true, alarmCtx=null;
 function ensureAlarmCtx(){ if(!alarmCtx){ try{ alarmCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
   if(alarmCtx && alarmCtx.state==='suspended') alarmCtx.resume(); return alarmCtx; }
@@ -1021,7 +1029,7 @@ function onIngestAudio(ic,a){
   // latched, sustained-duration version — this alone drives the alarm (see AUD_LOST_* above)
   if(nearGone){ ic.audBadSince = ic.audBadSince ?? now; ic.audGoodSince=null; }
   else { ic.audGoodSince = ic.audGoodSince ?? now; ic.audBadSince=null; }
-  if(!ic.audLost && nearGone && now-ic.audBadSince>=AUD_LOST_ENTER_MS){ ic.audLost=true; alarmSoundLoss(); }
+  if(!ic.audLost && nearGone && now-ic.audBadSince>=P.audLoss*1000){ ic.audLost=true; alarmSoundLoss(); }
   else if(ic.audLost && !nearGone && ic.audGoodSince!=null && now-ic.audGoodSince>=AUD_LOST_EXIT_MS){ ic.audLost=false; }
 
   let state='PASS';
@@ -1241,13 +1249,13 @@ function pollAudio(dt){
   const shown=Math.max(masterDb, peakDb-6);   // peak-biased so brief calls visibly register
   const fill=document.getElementById('vu-fill'); if(fill) fill.style.width=Math.max(0,Math.min(100,(shown+60)/60*100)).toFixed(0)+'%';
   const gap=(now-lastSpoke)/1000;
-  // alarm only for genuine, SUSTAINED audio loss (NO AUDIO held continuously for
-  // AUD_LOST_ENTER_MS, on top of noAudio's own 3s) — CLIP is a loudness/quality issue (live
-  // commentary/crowd noise peaks there often), "no speech" could just be a quiet moment, and a
-  // few-second natural gap (between points, changeovers) shouldn't trip this either
+  // alarm only for genuine, SUSTAINED audio loss (NO AUDIO held continuously for P.audLoss
+  // seconds, on top of noAudio's own 3s) — CLIP is a loudness/quality issue (live commentary/
+  // crowd noise peaks there often), "no speech" could just be a quiet moment, and a few-second
+  // natural gap (between points, changeovers) shouldn't trip this either
   if(noAudio){ captureAudBadSince = captureAudBadSince ?? now; captureAudGoodSince=null; }
   else { captureAudGoodSince = captureAudGoodSince ?? now; captureAudBadSince=null; }
-  if(!captureAudioFault && noAudio && now-captureAudBadSince>=AUD_LOST_ENTER_MS){ captureAudioFault=true; alarmSoundLoss(); }
+  if(!captureAudioFault && noAudio && now-captureAudBadSince>=P.audLoss*1000){ captureAudioFault=true; alarmSoundLoss(); }
   else if(captureAudioFault && !noAudio && captureAudGoodSince!=null && now-captureAudGoodSince>=AUD_LOST_EXIT_MS){ captureAudioFault=false; }
   if(noAudio)                 audioSay('NO AUDIO','warn');
   else if(peakDb>CLIP_DB)     audioSay('CLIP · '+masterDb.toFixed(0)+' dB','warn');
