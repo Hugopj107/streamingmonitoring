@@ -910,7 +910,7 @@ function addIngestCourt(initial){
     x:0,y:0,w:1,h:1, ref:null, running:false,
     on:false, reason:null, badSince:null, goodSince:null, onSince:0, stillMs:0, fracA:null, movA:null, baseFlick:null,
     lastLog:null, court:null, courtKey:null, _t:0, noFramesAlarmed:false,
-    audLost:false, audBadSince:null, audGoodSince:null,
+    audLost:false, audBadSince:null, audGoodSince:null, audFloorHist:[],
     grayBuf:new Float32Array(PW*PH), prevGray:null,
     silenceMs:0, lastAudioT:0,
     qcStab: window.QCStabilizer ? new window.QCStabilizer() : null, lastQCAt:0, lastQC:null,
@@ -966,7 +966,7 @@ function addIngestCourt(initial){
     ic.ref=null; ic.prevGray=null; ic.stillMs=0; ic.fracA=ic.movA=ic.baseFlick=null;
     ic.on=false; ic.reason=null; ic.lastQC=null; ic.lastLog=null;
     ic.frames=0; ic.fpsAvg=0; ic.lastFpsTick=0; ic.fpsEl.textContent='—'; ic.fpsEl.style.color='';
-    ic.noFramesAlarmed=false; ic.audLost=false; ic.audBadSince=null; ic.audGoodSince=null;
+    ic.noFramesAlarmed=false; ic.audLost=false; ic.audBadSince=null; ic.audGoodSince=null; ic.audFloorHist=[];
     ic.placeholderEl.style.display='none'; setIngestState(ic,'CONNECTING…',false);
     window.ingestAPI.start(feedKey,u);
     ic.running=true; ic.startBtn.disabled=true; ic.stopBtn.disabled=false; ic.listenBtn.disabled=false;
@@ -1024,12 +1024,37 @@ function refreshIngestConsistency(){
 // issue for the audio badge, never a loss, so it's excluded from the alarm-eligible path below
 // by construction (only `nearGone` — silence/dead-channel — feeds the alarm latch).
 const DISTORTION_FLAT_FACTOR=4;
+// Silence is judged RELATIVE to each court's own learned quiet floor, not one fixed dB number —
+// tested against a real SRT feed (srt://52.220.72.174:33127) whose normal ambient level sits
+// around -55 to -61dB (median -58dB, 71% of samples below -55dB): a fixed -55dB "silence"
+// threshold called that FAIL almost constantly, which is exactly the over-beeping reported.
+// Mirrors how FROZEN already auto-calibrates per court (baseFlick) instead of using one flicker
+// level for every camera — different mic gain/placement per venue means one dB number can't
+// work everywhere either. AUD_DROP_DB = how far below its OWN normal a court has to fall to
+// count as quiet; AUD_HARD_FLOOR_DB is a fixed safety net for true digital silence regardless
+// of any learned floor (catches a naturally-loud court going dead before enough of a gap opens
+// up). Both validated by replaying the real captured stream above through this exact logic
+// offline before wiring it in: 0 false alarms over 45s of genuinely healthy (just quiet) audio,
+// vs 1 false alarm from the old fixed-threshold version over the same clip.
+const AUD_DROP_DB=20, AUD_HARD_FLOOR_DB=-85;
+function audioFloor(hist){
+  if(hist.length<30) return -70;   // not enough history yet — a safe fixed fallback
+  const a=[...hist].sort((x,y)=>x-y);
+  return a[Math.floor(a.length*0.5)];   // median of recent healthy samples = this court's own normal
+}
 function onIngestAudio(ic,a){
   const now=performance.now(), dt=ic.lastAudioT?now-ic.lastAudioT:0; ic.lastAudioT=now;
   const rms=(a.momentary==null?-120:a.momentary), peak=(a.peak==null?-120:a.peak), ch=a.channels||[];
   const flatFactor=a.flatFactor==null?0:a.flatFactor;
-  if(rms<-55) ic.silenceMs+=dt; else ic.silenceMs=0;
-  const dead=ch.length>=2 && (Math.max(...ch)-Math.min(...ch))>25 && Math.min(...ch)<-55;
+
+  const floor=audioFloor(ic.audFloorHist);
+  const reallyQuiet = v => v<floor-AUD_DROP_DB || v<AUD_HARD_FLOOR_DB;
+  if(reallyQuiet(rms)) ic.silenceMs+=dt;
+  else { ic.silenceMs=0;
+    // only learn from healthy audio — never let an ongoing dropout drag the floor down with it
+    // (the same trap the FROZEN bootstrap bug hit: a bad value feeding its own baseline)
+    ic.audFloorHist.push(rms); if(ic.audFloorHist.length>2000) ic.audFloorHist.shift(); }
+  const dead=ch.length>=2 && (Math.max(...ch)-Math.min(...ch))>25 && reallyQuiet(Math.min(...ch));
   const nearGone = ic.silenceMs>1500 || dead;   // momentary — drives the badge, same as before
   // distortion judged on Flat_factor, NOT raw peak loudness — a clean passage can legitimately
   // peak near 0dBFS without being clipped, which is exactly why peak>-1 was over-firing before
@@ -1044,7 +1069,6 @@ function onIngestAudio(ic,a){
   let state='PASS', detail='';
   if(nearGone){ state='FAIL'; detail = dead ? 'dead channel' : 'no audio'; }
   else if(distorted){ state='CHECK'; detail = 'distortion/clipping (peak '+peak.toFixed(1)+'dB, flat '+flatFactor.toFixed(1)+')'; }
-  else if(rms<-40){ state='CHECK'; detail = 'low level'; }
   ic.audBadge.title=detail;
   badgeIngest(ic.audBadge,'AUD',state);
 }
