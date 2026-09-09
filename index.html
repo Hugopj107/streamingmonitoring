@@ -182,8 +182,8 @@
     <h2>Tuning (applies to every region and ingest court)</h2>
     <div class="grid">
       <div class="ctl">
-        <div class="row"><span>Trigger threshold</span><span class="val"><span id="v-trig">45</span>%</span></div>
-        <input id="s-trig" type="range" min="5" max="95" value="45">
+        <div class="row"><span>Trigger threshold</span><span class="val"><span id="v-trig">70</span>%</span></div>
+        <input id="s-trig" type="range" min="5" max="95" value="70">
         <div class="hint">% of a region's blocks that must change to fire. Player ≈ 2–8%; bars/slate/black ≈ 90–100%.</div>
       </div>
       <div class="ctl">
@@ -227,8 +227,8 @@
         <div class="hint">If a region stays in CHANGE this long it accepts the current picture as the new normal and clears — the safety net that stops it getting stuck (e.g. when you stop the feed). Only affects CHANGE; FROZEN / NO SIGNAL stay flagged as long as they're real.</div>
       </div>
       <div class="ctl">
-        <div class="row"><span>Audio-loss timeout</span><span class="val"><span id="v-audloss">5.0</span>s</span></div>
-        <input id="s-audloss" type="range" min="10" max="200" value="50">
+        <div class="row"><span>Audio-loss timeout</span><span class="val"><span id="v-audloss">6.0</span>s</span></div>
+        <input id="s-audloss" type="range" min="10" max="200" value="60">
         <div class="hint">How long audio must be continuously silent/dead before it's treated as genuinely lost (worth the alarm), not just a normal gap between points/changeovers. Lower = you hear about it sooner, but more risk of a real pause tripping it; higher = fewer false alarms, slower to catch a real drop.</div>
       </div>
     </div>
@@ -274,7 +274,7 @@ const vid=document.getElementById('vid'), stage=document.getElementById('stage')
       ph=document.getElementById('ph'), fpsEl=document.getElementById('fps');
 
 // ---- tunables ----
-const P={trig:0.45, sens:18, gridCols:28, adapt:0.04, hold:1.5, freeze:2.5, exit:0.6, rebase:8, freezeRel:0.2, audLoss:5};
+const P={trig:0.70, sens:18, gridCols:28, adapt:0.04, hold:1.5, freeze:2.5, exit:0.6, rebase:8, freezeRel:0.2, audLoss:6};
 const BLACK_LUMA=16;   // black / no-signal floor (mean grey)
 const S=(id,key,fn,show)=>{const s=document.getElementById('s-'+id),o=document.getElementById('v-'+id);
   s.oninput=()=>{P[key]=fn(+s.value); o.textContent=show(P[key]);};};
