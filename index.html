@@ -285,6 +285,14 @@ S('rebase','rebase',v=>v,v=>v);
 
 // ---- audible alarm: feed loss, line-up drift, audio loss (deliberately NOT for CHANGE or
 // QC exposure/white-balance — those are lower-stakes and would make this noisy) ----
+// Audio-loss specifically needs a sustained-duration latch, not a raw threshold: live sports
+// audio has real few-second quiet stretches (between points, changeovers) that briefly cross
+// any silence threshold without the feed actually being broken. Require near-silence/dead-
+// channel to hold continuously for AUD_LOST_ENTER_MS before calling it a genuine loss (worth
+// an alarm), and continuous good audio for AUD_LOST_EXIT_MS before it can re-arm — otherwise
+// a single blip of sound during an actually-dead feed would immediately reset and let the very
+// next quiet moment re-fire the alarm.
+const AUD_LOST_ENTER_MS=8000, AUD_LOST_EXIT_MS=2000;
 let alarmOn=true, alarmCtx=null;
 function ensureAlarmCtx(){ if(!alarmCtx){ try{ alarmCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} }
   if(alarmCtx && alarmCtx.state==='suspended') alarmCtx.resume(); return alarmCtx; }
@@ -893,7 +901,8 @@ function addIngestCourt(initial){
     cx, off, ox, raw, lockRef:null, driftNotified:0,
     x:0,y:0,w:1,h:1, ref:null, running:false,
     on:false, reason:null, badSince:null, goodSince:null, onSince:0, stillMs:0, fracA:null, movA:null, baseFlick:null,
-    lastLog:null, court:null, courtKey:null, _t:0, noFramesAlarmed:false, audLost:false,
+    lastLog:null, court:null, courtKey:null, _t:0, noFramesAlarmed:false,
+    audLost:false, audBadSince:null, audGoodSince:null,
     grayBuf:new Float32Array(PW*PH), prevGray:null,
     silenceMs:0, lastAudioT:0,
     qcStab: window.QCStabilizer ? new window.QCStabilizer() : null, lastQCAt:0, lastQC:null,
@@ -949,7 +958,7 @@ function addIngestCourt(initial){
     ic.ref=null; ic.prevGray=null; ic.stillMs=0; ic.fracA=ic.movA=ic.baseFlick=null;
     ic.on=false; ic.reason=null; ic.lastQC=null; ic.lastLog=null;
     ic.frames=0; ic.fpsAvg=0; ic.lastFpsTick=0; ic.fpsEl.textContent='—'; ic.fpsEl.style.color='';
-    ic.noFramesAlarmed=false; ic.audLost=false;
+    ic.noFramesAlarmed=false; ic.audLost=false; ic.audBadSince=null; ic.audGoodSince=null;
     ic.placeholderEl.style.display='none'; setIngestState(ic,'CONNECTING…',false);
     window.ingestAPI.start(feedKey,u);
     ic.running=true; ic.startBtn.disabled=true; ic.stopBtn.disabled=false; ic.listenBtn.disabled=false;
@@ -1007,13 +1016,18 @@ function onIngestAudio(ic,a){
   const rms=(a.momentary==null?-120:a.momentary), peak=(a.peak==null?-120:a.peak), ch=a.channels||[];
   if(rms<-55) ic.silenceMs+=dt; else ic.silenceMs=0;
   const dead=ch.length>=2 && (Math.max(...ch)-Math.min(...ch))>25 && Math.min(...ch)<-55;
-  const lost = ic.silenceMs>1500 || dead;   // genuinely gone (silence or a dead channel) — the only cases worth an alarm
+  const nearGone = ic.silenceMs>1500 || dead;   // momentary — drives the badge, same as before
+
+  // latched, sustained-duration version — this alone drives the alarm (see AUD_LOST_* above)
+  if(nearGone){ ic.audBadSince = ic.audBadSince ?? now; ic.audGoodSince=null; }
+  else { ic.audGoodSince = ic.audGoodSince ?? now; ic.audBadSince=null; }
+  if(!ic.audLost && nearGone && now-ic.audBadSince>=AUD_LOST_ENTER_MS){ ic.audLost=true; alarmSoundLoss(); }
+  else if(ic.audLost && !nearGone && ic.audGoodSince!=null && now-ic.audGoodSince>=AUD_LOST_EXIT_MS){ ic.audLost=false; }
+
   let state='PASS';
-  if(lost) state='FAIL';
+  if(nearGone) state='FAIL';
   else if(peak>-1) state='FAIL';   // clipping — a loudness/quality issue, not a loss; badge still flags it, no alarm
   else if(rms<-40) state='CHECK';
-  if(lost && !ic.audLost) alarmSoundLoss();
-  ic.audLost=lost;
   badgeIngest(ic.audBadge,'AUD',state);
 }
 
@@ -1187,11 +1201,11 @@ if(window.sheetsAPI){
 // Ported from tennis_control_room_v8 AudioProcessor: no-audio keyed on PEAK (3s),
 // loudest-25ms-sub-frame metering, adaptive voice threshold, no-speech alert.
 let audioCtx=null, analyser=null, audioBuf=null, elemSrc=null;
-let naSince=null, lastSpoke=0, floorHist=[], captureAudioFault=false;
+let naSince=null, lastSpoke=0, floorHist=[], captureAudioFault=false, captureAudBadSince=null, captureAudGoodSince=null;
 const NOAUDIO_DB=-62, CLIP_DB=-3, SPEAK_MANUAL=-45, SPEAK_MARGIN=9, NOSPEECH_S=90;   // tennis_v8.json
 function ensureCtx(){ if(!audioCtx){ try{ audioCtx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } return audioCtx; }
 function audioSay(txt,cls){ const el=document.getElementById('audio-status'); if(el){ el.textContent=txt; el.className='chip '+(cls||'ok'); } }
-function resetAudio(){ naSince=null; lastSpoke=performance.now(); floorHist=[]; captureAudioFault=false; }
+function resetAudio(){ naSince=null; lastSpoke=performance.now(); floorHist=[]; captureAudioFault=false; captureAudBadSince=null; captureAudGoodSince=null; }
 function setupAudio(stream){
   const ctx=ensureCtx(); if(!ctx) return;
   const at=stream.getAudioTracks?stream.getAudioTracks():[];
@@ -1227,11 +1241,14 @@ function pollAudio(dt){
   const shown=Math.max(masterDb, peakDb-6);   // peak-biased so brief calls visibly register
   const fill=document.getElementById('vu-fill'); if(fill) fill.style.width=Math.max(0,Math.min(100,(shown+60)/60*100)).toFixed(0)+'%';
   const gap=(now-lastSpoke)/1000;
-  // alarm only for genuine audio loss (NO AUDIO) — CLIP is a loudness/quality issue (live
-  // commentary/crowd noise peaks there often) and "no speech" could just be a quiet moment,
-  // neither means the audio is actually gone
-  if(noAudio && !captureAudioFault) alarmSoundLoss();
-  captureAudioFault = noAudio;
+  // alarm only for genuine, SUSTAINED audio loss (NO AUDIO held continuously for
+  // AUD_LOST_ENTER_MS, on top of noAudio's own 3s) — CLIP is a loudness/quality issue (live
+  // commentary/crowd noise peaks there often), "no speech" could just be a quiet moment, and a
+  // few-second natural gap (between points, changeovers) shouldn't trip this either
+  if(noAudio){ captureAudBadSince = captureAudBadSince ?? now; captureAudGoodSince=null; }
+  else { captureAudGoodSince = captureAudGoodSince ?? now; captureAudBadSince=null; }
+  if(!captureAudioFault && noAudio && now-captureAudBadSince>=AUD_LOST_ENTER_MS){ captureAudioFault=true; alarmSoundLoss(); }
+  else if(captureAudioFault && !noAudio && captureAudGoodSince!=null && now-captureAudGoodSince>=AUD_LOST_EXIT_MS){ captureAudioFault=false; }
   if(noAudio)                 audioSay('NO AUDIO','warn');
   else if(peakDb>CLIP_DB)     audioSay('CLIP · '+masterDb.toFixed(0)+' dB','warn');
   else if(gap>NOSPEECH_S)     audioSay('no speech '+Math.floor(gap)+'s','warn');
