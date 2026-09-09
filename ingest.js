@@ -91,6 +91,9 @@ class Feed {
     if(!this.alive) return;
     // astats + ametadata=print streams per-channel RMS/Peak (dBFS) continuously on stdout.
     // dBFS matches the v8 thresholds and gives us level, clip (peak) and per-channel life.
+    // Flat_factor is astats' purpose-built distortion/clipping metric — it measures runs of
+    // consecutive identical (flat-topped) samples, which is the actual signature of clipping,
+    // as opposed to a raw peak-loudness threshold that also fires on legitimately loud audio.
     const args = ['-hide_banner','-loglevel','error', ...inputArgs(this.url),
       '-vn','-af','astats=metadata=1:reset=6,ametadata=print:file=-','-f','null','-'];
     const p = spawn(FFMPEG, args); this.aproc = p;
@@ -100,19 +103,24 @@ class Feed {
   }
 
   _onAudioData(s){
-    const num = v => (v==='-inf'||v==='inf'||v==null) ? -120 : parseFloat(v);
+    const num = v => (v==='-inf'||v==='inf'||v==null||v==='nan') ? -120 : parseFloat(v);
     this._abuf = (this._abuf || '') + s;
     const lines = this._abuf.split('\n'); this._abuf = lines.pop();
     for(const ln of lines){
       let m;
+      // field order within astats' metadata output is fixed (...Peak_level, RMS_level,
+      // RMS_peak, RMS_trough, Crest_factor, Flat_factor...) — Flat_factor prints last of the
+      // fields we care about, so triggering the emit there (not at Peak_level) guarantees
+      // every field below belongs to the same stats frame
       if((m = ln.match(/astats\.(\d+)\.RMS_level=(-?\d+(?:\.\d+)?|-?inf)/))) { this._ch[+m[1]-1] = num(m[2]); }
       else if((m = ln.match(/astats\.Overall\.RMS_level=(-?\d+(?:\.\d+)?|-?inf)/))) { this._ovRms = num(m[1]); }
-      else if((m = ln.match(/astats\.Overall\.Peak_level=(-?\d+(?:\.\d+)?|-?inf)/))) {
-        this._ovPeak = num(m[1]);
+      else if((m = ln.match(/astats\.Overall\.Peak_level=(-?\d+(?:\.\d+)?|-?inf)/))) { this._ovPeak = num(m[1]); }
+      else if((m = ln.match(/astats\.Overall\.Flat_factor=(-?\d+(?:\.\d+)?|nan|-?inf)/))) {
         this.onAudio({ courtId:this.courtId,
           momentary: this._ovRms==null?-120:this._ovRms,   // dBFS RMS (kept name for UI compat)
           rms: this._ovRms==null?-120:this._ovRms,
-          peak: this._ovPeak,
+          peak: this._ovPeak==null?-120:this._ovPeak,
+          flatFactor: m[1]==='nan' ? 0 : num(m[1]),
           channels: this._ch.slice(),
           channelCount: this._ch.length });
         this._ch = [];

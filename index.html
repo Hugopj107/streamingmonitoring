@@ -1019,12 +1019,21 @@ function refreshIngestConsistency(){
   const out=window.consistency?window.consistency(items):{};
   ingestCourts.forEach(ic=>{ const r=out[ic.feedKey]; ic.outlierEl.style.display=(r&&r.outlier)?'inline-block':'none'; });
 }
+// Flat_factor > this = astats is seeing real runs of consecutive identical (flat-topped)
+// samples, the actual signature of clipping — not just a loud passage. Distortion is a quality
+// issue for the audio badge, never a loss, so it's excluded from the alarm-eligible path below
+// by construction (only `nearGone` — silence/dead-channel — feeds the alarm latch).
+const DISTORTION_FLAT_FACTOR=4;
 function onIngestAudio(ic,a){
   const now=performance.now(), dt=ic.lastAudioT?now-ic.lastAudioT:0; ic.lastAudioT=now;
   const rms=(a.momentary==null?-120:a.momentary), peak=(a.peak==null?-120:a.peak), ch=a.channels||[];
+  const flatFactor=a.flatFactor==null?0:a.flatFactor;
   if(rms<-55) ic.silenceMs+=dt; else ic.silenceMs=0;
   const dead=ch.length>=2 && (Math.max(...ch)-Math.min(...ch))>25 && Math.min(...ch)<-55;
   const nearGone = ic.silenceMs>1500 || dead;   // momentary — drives the badge, same as before
+  // distortion judged on Flat_factor, NOT raw peak loudness — a clean passage can legitimately
+  // peak near 0dBFS without being clipped, which is exactly why peak>-1 was over-firing before
+  const distorted = flatFactor>DISTORTION_FLAT_FACTOR;
 
   // latched, sustained-duration version — this alone drives the alarm (see AUD_LOST_* above)
   if(nearGone){ ic.audBadSince = ic.audBadSince ?? now; ic.audGoodSince=null; }
@@ -1032,10 +1041,11 @@ function onIngestAudio(ic,a){
   if(!ic.audLost && nearGone && now-ic.audBadSince>=P.audLoss*1000){ ic.audLost=true; alarmSoundLoss(); }
   else if(ic.audLost && !nearGone && ic.audGoodSince!=null && now-ic.audGoodSince>=AUD_LOST_EXIT_MS){ ic.audLost=false; }
 
-  let state='PASS';
-  if(nearGone) state='FAIL';
-  else if(peak>-1) state='FAIL';   // clipping — a loudness/quality issue, not a loss; badge still flags it, no alarm
-  else if(rms<-40) state='CHECK';
+  let state='PASS', detail='';
+  if(nearGone){ state='FAIL'; detail = dead ? 'dead channel' : 'no audio'; }
+  else if(distorted){ state='CHECK'; detail = 'distortion/clipping (peak '+peak.toFixed(1)+'dB, flat '+flatFactor.toFixed(1)+')'; }
+  else if(rms<-40){ state='CHECK'; detail = 'low level'; }
+  ic.audBadge.title=detail;
   badgeIngest(ic.audBadge,'AUD',state);
 }
 
